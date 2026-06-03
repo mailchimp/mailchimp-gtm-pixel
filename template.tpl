@@ -19,6 +19,11 @@ ___INFO___
     "displayName": "Mailchimp"
   },
   "description": "Loads the Mailchimp Site Tracking Pixel and translates standard GA4 ecommerce dataLayer events into Mailchimp\u0027s tracking schema",
+  "categories": [
+    "ANALYTICS",
+    "EMAIL_MARKETING",
+    "MARKETING"
+  ],
   "containerContexts": [
     "WEB"
   ]

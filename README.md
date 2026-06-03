@@ -4,6 +4,9 @@ A Google Tag Manager (GTM) **custom tag template** that loads the Mailchimp
 Site Tracking pixel and translates standard GA4 ecommerce `dataLayer` events
 into Mailchimp's tracking schema.
 
+This repository is structured for submission to the
+[GTM Community Template Gallery](https://developers.google.com/tag-platform/tag-manager/templates/gallery).
+
 The template:
 
 - Loads `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`
@@ -18,18 +21,22 @@ The template:
   - SHA-256 of the normalized email as `EMAIL_SHA256`
   - SHA-256 of the E.164-normalized phone as `PHONE_SHA256`
 
-## Files
+## Repository layout
+
+The Gallery requires these three files at the repo root, on `main`:
 
 ```
-templates/
-  mailchimp-site-tracking-pixel.tpl   # GTM Custom Template (TAG, WEB)
+template.tpl       # GTM Custom Template (TAG, WEB) — exported from the editor
+metadata.yaml      # Gallery metadata: homepage, documentation, versions
+LICENSE            # Apache 2.0 (required by the Gallery)
+README.md          # This file
 ```
 
-## Installing in GTM
+## Installing in GTM (manual import)
 
 1. In your GTM container, go to **Templates → Tag Templates → New**.
 2. In the template editor, choose **⋮ → Import**.
-3. Select `templates/mailchimp-site-tracking-pixel.tpl`.
+3. Select `template.tpl` from this repo.
 4. Save the template.
 5. Create a new tag using the template and fill in:
    - **Mailchimp User ID** (`mcUserId`)
@@ -79,12 +86,21 @@ dataLayer.push({
 | `read_data_layer`| `event`, `ecommerce`, `user_data`                                     |
 | `inject_script`  | `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`      |
 
+## Categories
+
+The Gallery `INFO` block declares the following categories (most → least
+relevant):
+
+1. `ANALYTICS`
+2. `EMAIL_MARKETING`
+3. `MARKETING`
+
 ## Development
 
 The `.tpl` file is GTM's custom-template format with sections delimited by
 `___SECTION___` markers. To iterate:
 
-1. Open the template in GTM's template editor (or any editor — it's plain
+1. Open `template.tpl` in GTM's template editor (or any editor — it's plain
    text).
 2. Edit the `___SANDBOXED_JS_FOR_WEB_TEMPLATE___` block for runtime
    behavior.
@@ -112,3 +128,27 @@ The `.tpl` file is GTM's custom-template format with sections delimited by
 - `__mcGtmConfig` merge preserves pre-existing keys
 
 Run them from inside the GTM template editor via **Run tests**.
+
+## Submitting / updating the Gallery entry
+
+The Gallery key is `metadata.yaml`. Every published version is listed under
+`versions:` (newest first) with the SHA of the commit that contains the
+final `template.tpl` for that version.
+
+To publish an update:
+
+1. Land your `template.tpl` changes on `main`.
+2. Copy the commit SHA of that landing commit.
+3. Prepend a new entry to the top of `versions:` in `metadata.yaml`:
+   ```yaml
+   versions:
+     - sha: <new-commit-sha>
+       changeNotes: |2
+         Short summary of what changed.
+     # …older versions follow…
+   ```
+4. Commit and push. The Gallery picks up the change within a few days.
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](./LICENSE).
