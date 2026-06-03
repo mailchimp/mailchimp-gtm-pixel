@@ -1,0 +1,12 @@
+homepage: "https://mailchimp.com"
+documentation: "https://mailchimp.com/help/mailchimp-site-tracking-pixel-integration-guidance/"
+versions:
+  # Latest version
+  - sha: 1ba5f9812384adc1c30e8b8ded19d744f65308ca
+    changeNotes: |2
+      Initial release.
+      Loads the Mailchimp Site Tracking bridge (gtm-bridge.js).
+      Maps GA4 ecommerce events (view_item, add_to_cart, begin_checkout,
+      purchase) to Mailchimp's PRODUCT_VIEWED, PRODUCT_ADDED_TO_CART,
+      CHECKOUT_STARTED, and PURCHASED events.
+      Optional identifiers: GOOGLE_CLIENT_ID, EMAIL_SHA256, PHONE_SHA256.
