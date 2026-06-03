@@ -2,6 +2,11 @@ homepage: "https://mailchimp.com"
 documentation: "https://mailchimp.com/help/mailchimp-site-tracking-pixel-integration-guidance/"
 versions:
   # Latest version
+  - sha: 28170f04649af47037161315b0e87168fa1dbf26
+    changeNotes: |2
+      Add Mailchimp brand icon to template (brand.thumbnail).
+      Set brand.id to "mailchimp".
+  # Older versions
   - sha: 1ba5f9812384adc1c30e8b8ded19d744f65308ca
     changeNotes: |2
       Initial release.
