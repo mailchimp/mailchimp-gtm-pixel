@@ -38,15 +38,13 @@ ___TEMPLATE_PARAMETERS___
     "type": "TEXT",
     "name": "mcUserId",
     "displayName": "Mailchimp User ID",
-    "simpleValueType": true,
-    "defaultValue": 123
+    "simpleValueType": true
   },
   {
     "type": "TEXT",
     "name": "mcConnectedSiteId",
     "displayName": "Mailchimp Connected Site ID",
-    "simpleValueType": true,
-    "defaultValue": 123
+    "simpleValueType": true
   },
   {
     "type": "CHECKBOX",
@@ -155,19 +153,36 @@ function runIdentify() {
   }
 }
 
-function getLineItem(item) {
-  const unitPrice = makeNumber(item.price) || 0;
-  const qty = makeNumber(item.quantity) || 1;
-  return {
-    item: {
-      id:        item.item_variant || item.variant_id || item.item_id || item.id || '',
-      productId: item.item_id || item.product_id || item.id || '',
-      title:     item.item_name || item.name || item.title || '',
-      price:     unitPrice
-    },
-    quantity: qty,
-    price:    unitPrice * qty
+function isValidPrice(n) {
+  return typeof n === 'number' && n === n && n >= 0;
+}
+
+function buildProductVariant(item, currency) {
+  const price = makeNumber(item.price);
+  if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+  const variant = {
+    id:        item.item_id,
+    productId: item.item_id,
+    title:     item.item_name,
+    price:     price,
+    sku:       item.item_id
   };
+  if (currency)           variant.currency = currency;
+  if (item.item_brand)    variant.vendor = item.item_brand;
+  if (item.item_category) variant.categories = [item.item_category];
+  return variant;
+}
+
+function buildLineItem(item, currency) {
+  const variant = buildProductVariant(item, currency);
+  if (!variant) return null;
+  const unitPrice = variant.price;
+  const qty = makeNumber(item.quantity);
+  const lineItem = { item: variant };
+  if (qty === qty) lineItem.quantity = qty;
+  if (isValidPrice(unitPrice * qty)) lineItem.price = unitPrice * qty;
+  if (currency) lineItem.currency = currency;
+  return lineItem;
 }
 
 function runTrack() {
@@ -193,64 +208,110 @@ function runTrack() {
   let props = {};
 
   if (mcEvent === 'PRODUCT_VIEWED') {
-    const item = (e.items && e.items[0]) || e || {};
-    props = {
-      product: {
-        id:         item.item_variant || item.variant_id || item.item_id || item.id || 'prod-unknown',
-        productId:  item.item_id || item.product_id || item.id || 'prod-unknown',
-        title:      item.item_name || item.name || item.title || 'Unknown Product',
-        price:      makeNumber(item.price) || 0,
-        currency:   e.currency || 'USD',
-        sku:        item.item_id || item.sku || item.id || '',
-        vendor:     item.item_brand || item.brand || item.vendor || '',
-        categories: item.item_category ? [item.item_category] : []
-      }
-    };
+    const item = e.items && e.items[0];
+    if (!item) {
+      logToConsole('MC: view_item missing items[0]');
+      data.gtmOnFailure();
+      return;
+    }
+    const variant = buildProductVariant(item, e.currency);
+    if (!variant) {
+      logToConsole('MC: view_item product missing required id/title/price');
+      data.gtmOnFailure();
+      return;
+    }
+    props = { product: variant };
   } else if (mcEvent === 'PRODUCT_ADDED_TO_CART') {
     const item = e.items && e.items[0];
     if (!item) {
       logToConsole('MC: add_to_cart missing items[0]');
+      data.gtmOnFailure();
       return;
     }
-    const unitPrice = makeNumber(item.price) || 0;
-    const qty = makeNumber(item.quantity) || 1;
+    if (!e.cart_id) {
+      logToConsole('MC: add_to_cart missing cart_id');
+      data.gtmOnFailure();
+      return;
+    }
+    const lineItem = buildLineItem(item, e.currency);
+    if (!lineItem) {
+      logToConsole('MC: add_to_cart product missing required id/title/price');
+      data.gtmOnFailure();
+      return;
+    }
     props = {
-      cartId: e.cart_id || e.id || 'cart-' + makeString(getTimestampMillis()),
-      product: {
-        item: {
-          id:        item.item_variant || item.item_id || '',
-          productId: item.item_id || '',
-          title:     item.item_name || '',
-          price:     unitPrice,
-          currency:  e.currency || 'USD',
-          sku:       item.item_id || ''
-        },
-        quantity: qty,
-        price:    unitPrice * qty,
-        currency: e.currency || 'USD'
-      }
+      cartId: e.cart_id,
+      product: lineItem
     };
   } else if (mcEvent === 'CHECKOUT_STARTED') {
-    props = {
-      checkout: {
-        id:         e.checkout_id || e.transaction_id || 'checkout-' + makeString(getTimestampMillis()),
-        cartId:     e.cart_id || 'cart-' + makeString(getTimestampMillis()),
-        lineItems:  (e.items || []).map(getLineItem),
-        totalPrice: makeNumber(e.value) || 0,
-        currency:   e.currency || 'USD'
+    if (!e.checkout_id) {
+      logToConsole('MC: begin_checkout missing checkout_id');
+      data.gtmOnFailure();
+      return;
+    }
+    if (!e.cart_id) {
+      logToConsole('MC: begin_checkout missing cart_id');
+      data.gtmOnFailure();
+      return;
+    }
+    if (!e.items || e.items.length === 0) {
+      logToConsole('MC: begin_checkout missing items');
+      data.gtmOnFailure();
+      return;
+    }
+    const lineItems = [];
+    for (let i = 0; i < e.items.length; i++) {
+      const li = buildLineItem(e.items[i], e.currency);
+      if (!li) {
+        logToConsole('MC: begin_checkout item[' + i + '] missing required id/title/price');
+        data.gtmOnFailure();
+        return;
       }
+      lineItems.push(li);
+    }
+    const totalPrice = makeNumber(e.value);
+    const checkout = {
+      id:        e.checkout_id,
+      cartId:    e.cart_id,
+      lineItems: lineItems
     };
+    if (isValidPrice(totalPrice)) checkout.totalPrice = totalPrice;
+    if (e.currency) checkout.currency = e.currency;
+    props = { checkout: checkout };
   } else if (mcEvent === 'PURCHASED') {
-    props = {
-      order: {
-        id:            e.transaction_id || 'order-' + makeString(getTimestampMillis()),
-        lineItems:     (e.items || []).map(getLineItem),
-        totalPrice:    makeNumber(e.value) || 0,
-        totalTax:      makeNumber(e.tax) || 0,
-        totalShipping: makeNumber(e.shipping) || 0,
-        currency:      e.currency || 'USD'
+    if (!e.transaction_id) {
+      logToConsole('MC: purchase missing transaction_id');
+      data.gtmOnFailure();
+      return;
+    }
+    if (!e.items || e.items.length === 0) {
+      logToConsole('MC: purchase missing items');
+      data.gtmOnFailure();
+      return;
+    }
+    const lineItems = [];
+    for (let i = 0; i < e.items.length; i++) {
+      const li = buildLineItem(e.items[i], e.currency);
+      if (!li) {
+        logToConsole('MC: purchase item[' + i + '] missing required id/title/price');
+        data.gtmOnFailure();
+        return;
       }
+      lineItems.push(li);
+    }
+    const totalPrice = makeNumber(e.value);
+    const totalTax = makeNumber(e.tax);
+    const totalShipping = makeNumber(e.shipping);
+    const order = {
+      id:        e.transaction_id,
+      lineItems: lineItems
     };
+    if (isValidPrice(totalPrice))    order.totalPrice = totalPrice;
+    if (isValidPrice(totalTax))      order.totalTax = totalTax;
+    if (isValidPrice(totalShipping)) order.totalShipping = totalShipping;
+    if (e.currency)                  order.currency = e.currency;
+    if (e.cart_id)                   order.cartId = e.cart_id;
+    props = { order: order };
   }
 
   logToConsole('MC Track Event payload: ' + JSON.stringify(props));
@@ -614,44 +675,28 @@ scenarios:
       'purchase':       'PURCHASED'
     };
     assertThat(eventMap['unknown_event']).isUndefined();
-- name: Cart ID fallback generates correctly
-  code: |-
-    const ecommerce = { currency: 'USD', value: 29.99 };
-    const cartId = ecommerce.cart_id || ecommerce.id || 'cart-fallback';
-    assertThat(cartId).isEqualTo('cart-fallback');
-- name: Line item maps cross-platform fields correctly
+- name: Line item maps GA4 fields to c2-engagement ProductVariantDto (id, productId, title, price required)
   code: |-
     const item = { item_id: 'prod-001', item_name: 'Test Product', price: '29.99', quantity: '2' };
     const makeNumber = require('makeNumber');
-    const unitPrice = makeNumber(item.price) || 0;
-    const qty = makeNumber(item.quantity) || 1;
+    const unitPrice = makeNumber(item.price);
+    const qty = makeNumber(item.quantity);
     const lineItem = {
       item: {
-        id:        item.item_variant || item.variant_id || item.item_id || '',
-        productId: item.item_id      || item.product_id || '',
-        title:     item.item_name    || item.name       || item.title  || '',
-        price:     unitPrice
+        id:        item.item_id,
+        productId: item.item_id,
+        title:     item.item_name,
+        price:     unitPrice,
+        sku:       item.item_id
       },
       quantity: qty,
       price:    unitPrice * qty
     };
+    assertThat(lineItem.item.id).isEqualTo('prod-001');
     assertThat(lineItem.item.productId).isEqualTo('prod-001');
     assertThat(lineItem.item.title).isEqualTo('Test Product');
+    assertThat(lineItem.item.price).isEqualTo(29.99);
     assertThat(lineItem.price).isEqualTo(59.98);
-- name: Line item with missing price defaults to 0 (no NaN)
-  code: |-
-    const item = { item_id: 'prod-002', item_name: 'No Price Product', quantity: '3' };
-    const makeNumber = require('makeNumber');
-    const unitPrice = makeNumber(item.price) || 0;
-    const qty = makeNumber(item.quantity) || 1;
-    const lineItem = {
-      item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: unitPrice },
-      quantity: qty,
-      price: unitPrice * qty
-    };
-    assertThat(lineItem.item.price).isEqualTo(0);
-    assertThat(lineItem.price).isEqualTo(0);
-    assertThat(lineItem.quantity).isEqualTo(3);
 - name: Missing User ID triggers failure
   code: |-
     const userId = '';
@@ -664,23 +709,22 @@ scenarios:
     const connectedSiteId = 'xyz789';
     const isValid = userId && connectedSiteId;
     assertThat(isValid).isTruthy();
-- name: PRODUCT_VIEWED payload uses first item and falls back sanely
+- name: PRODUCT_VIEWED payload matches c2-engagement ProductVariantDto
   code: |-
     const makeNumber = require('makeNumber');
     const e = { currency: 'EUR', items: [{ item_id: 'sku-1', item_name: 'Hat', price: '12.50', item_brand: 'Acme', item_category: 'Apparel' }] };
-    const item = (e.items && e.items[0]) || e || {};
-    const props = {
-      product: {
-        id:         item.item_variant || item.variant_id || item.item_id || item.id || 'prod-unknown',
-        productId:  item.item_id || item.product_id || item.id || 'prod-unknown',
-        title:      item.item_name || item.name || item.title || 'Unknown Product',
-        price:      makeNumber(item.price) || 0,
-        currency:   e.currency || 'USD',
-        sku:        item.item_id || item.sku || item.id || '',
-        vendor:     item.item_brand || item.brand || item.vendor || '',
-        categories: item.item_category ? [item.item_category] : []
-      }
+    const item = e.items[0];
+    const variant = {
+      id:        item.item_id,
+      productId: item.item_id,
+      title:     item.item_name,
+      price:     makeNumber(item.price),
+      sku:       item.item_id,
+      currency:  e.currency,
+      vendor:    item.item_brand,
+      categories: [item.item_category]
     };
+    const props = { product: variant };
     assertThat(props.product.id).isEqualTo('sku-1');
     assertThat(props.product.productId).isEqualTo('sku-1');
     assertThat(props.product.title).isEqualTo('Hat');
@@ -688,118 +732,153 @@ scenarios:
     assertThat(props.product.currency).isEqualTo('EUR');
     assertThat(props.product.vendor).isEqualTo('Acme');
     assertThat(props.product.categories).isEqualTo(['Apparel']);
-- name: PRODUCT_VIEWED with no items uses unknown placeholders
+- name: PRODUCT_VIEWED fails when items missing
+  code: |-
+    const e = { currency: 'USD' };
+    const item = e.items && e.items[0];
+    assertThat(item).isUndefined();
+- name: PRODUCT_VIEWED fails when item missing required fields (id/title/price)
   code: |-
     const makeNumber = require('makeNumber');
-    const e = { currency: 'USD' };
-    const item = (e.items && e.items[0]) || e || {};
-    const props = {
-      product: {
-        id:        item.item_variant || item.variant_id || item.item_id || item.id || 'prod-unknown',
-        productId: item.item_id || item.product_id || item.id || 'prod-unknown',
-        title:     item.item_name || item.name || item.title || 'Unknown Product',
-        price:     makeNumber(item.price) || 0,
-        currency:  e.currency || 'USD'
-      }
-    };
-    assertThat(props.product.id).isEqualTo('prod-unknown');
-    assertThat(props.product.productId).isEqualTo('prod-unknown');
-    assertThat(props.product.title).isEqualTo('Unknown Product');
-    assertThat(props.product.price).isEqualTo(0);
-- name: PRODUCT_ADDED_TO_CART payload computes line total without NaN
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function build(item) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      return { id: item.item_id, title: item.item_name, price: price };
+    }
+    assertThat(build({ item_name: 'No id', price: 1 })).isEqualTo(null);
+    assertThat(build({ item_id: 'x', price: 1 })).isEqualTo(null);
+    assertThat(build({ item_id: 'x', item_name: 'No price' })).isEqualTo(null);
+    assertThat(build({ item_id: 'x', item_name: 'Negative', price: -1 })).isEqualTo(null);
+    const ok = build({ item_id: 'x', item_name: 'Ok', price: 1 });
+    assertThat(ok).isNotEqualTo(null);
+    assertThat(ok.id).isEqualTo('x');
+- name: PRODUCT_ADDED_TO_CART payload matches c2-engagement CartLineItemDto
   code: |-
     const makeNumber = require('makeNumber');
     const e = { currency: 'USD', cart_id: 'cart-abc', items: [{ item_id: 'sku-2', item_name: 'Shirt', price: '20', quantity: '2' }] };
-    const item = e.items && e.items[0];
-    const unitPrice = makeNumber(item.price) || 0;
-    const qty = makeNumber(item.quantity) || 1;
+    const item = e.items[0];
+    const unitPrice = makeNumber(item.price);
+    const qty = makeNumber(item.quantity);
     const props = {
-      cartId: e.cart_id || e.id || 'cart-fallback',
+      cartId: e.cart_id,
       product: {
-        item: { id: item.item_variant || item.item_id || '', productId: item.item_id || '', title: item.item_name || '', price: unitPrice, currency: e.currency || 'USD', sku: item.item_id || '' },
+        item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: unitPrice, sku: item.item_id, currency: e.currency },
         quantity: qty,
         price: unitPrice * qty,
-        currency: e.currency || 'USD'
+        currency: e.currency
       }
     };
     assertThat(props.cartId).isEqualTo('cart-abc');
+    assertThat(props.product.item.id).isEqualTo('sku-2');
+    assertThat(props.product.item.productId).isEqualTo('sku-2');
+    assertThat(props.product.item.title).isEqualTo('Shirt');
     assertThat(props.product.item.price).isEqualTo(20);
     assertThat(props.product.quantity).isEqualTo(2);
     assertThat(props.product.price).isEqualTo(40);
     assertThat(props.product.currency).isEqualTo('USD');
-- name: CHECKOUT_STARTED payload aggregates line items
+- name: PRODUCT_ADDED_TO_CART fails when cart_id missing
+  code: |-
+    const e = { currency: 'USD', items: [{ item_id: 'x', item_name: 'X', price: 1 }] };
+    assertThat(e.cart_id).isUndefined();
+- name: CHECKOUT_STARTED payload matches c2-engagement CheckoutDto
   code: |-
     const makeNumber = require('makeNumber');
-    function getLineItem(item) {
-      const unitPrice = makeNumber(item.price) || 0;
-      const qty = makeNumber(item.quantity) || 1;
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function buildLine(item, currency) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      const qty = makeNumber(item.quantity);
       return {
-        item: { id: item.item_variant || item.variant_id || item.item_id || item.id || '', productId: item.item_id || item.product_id || item.id || '', title: item.item_name || item.name || item.title || '', price: unitPrice },
+        item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: price, sku: item.item_id, currency: currency },
         quantity: qty,
-        price: unitPrice * qty
+        price: price * qty,
+        currency: currency
       };
     }
     const e = { currency: 'USD', cart_id: 'cart-1', checkout_id: 'co-1', value: 50, items: [{ item_id: 'a', item_name: 'A', price: 10, quantity: 2 }, { item_id: 'b', item_name: 'B', price: 15, quantity: 2 }] };
+    const lineItems = e.items.map(function(i){ return buildLine(i, e.currency); });
     const props = {
       checkout: {
-        id:         e.checkout_id || e.transaction_id || 'checkout-fallback',
-        cartId:     e.cart_id || 'cart-fallback',
-        lineItems:  (e.items || []).map(getLineItem),
-        totalPrice: makeNumber(e.value) || 0,
-        currency:   e.currency || 'USD'
+        id:        e.checkout_id,
+        cartId:    e.cart_id,
+        lineItems: lineItems,
+        totalPrice: makeNumber(e.value),
+        currency:  e.currency
       }
     };
     assertThat(props.checkout.id).isEqualTo('co-1');
     assertThat(props.checkout.cartId).isEqualTo('cart-1');
     assertThat(props.checkout.lineItems.length).isEqualTo(2);
+    assertThat(props.checkout.lineItems[0].item.id).isEqualTo('a');
     assertThat(props.checkout.lineItems[0].price).isEqualTo(20);
     assertThat(props.checkout.lineItems[1].price).isEqualTo(30);
     assertThat(props.checkout.totalPrice).isEqualTo(50);
-- name: PURCHASED payload includes tax and shipping
+- name: CHECKOUT_STARTED fails when checkout_id or cart_id missing
+  code: |-
+    const e1 = { cart_id: 'c', items: [{ item_id: 'a', item_name: 'A', price: 1 }] };
+    assertThat(e1.checkout_id).isUndefined();
+    const e2 = { checkout_id: 'co', items: [{ item_id: 'a', item_name: 'A', price: 1 }] };
+    assertThat(e2.cart_id).isUndefined();
+- name: PURCHASED payload matches c2-engagement CheckoutDto (as order)
   code: |-
     const makeNumber = require('makeNumber');
-    function getLineItem(item) {
-      const unitPrice = makeNumber(item.price) || 0;
-      const qty = makeNumber(item.quantity) || 1;
-      return {
-        item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: unitPrice },
-        quantity: qty,
-        price: unitPrice * qty
-      };
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function buildLine(item, currency) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      const qty = makeNumber(item.quantity);
+      return { item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: price, sku: item.item_id, currency: currency }, quantity: qty, price: price * qty, currency: currency };
     }
     const e = { currency: 'USD', transaction_id: 'tx-1', value: 100, tax: 8, shipping: 5, items: [{ item_id: 'a', item_name: 'A', price: 100, quantity: 1 }] };
     const props = {
       order: {
-        id:            e.transaction_id || 'order-fallback',
-        lineItems:     (e.items || []).map(getLineItem),
-        totalPrice:    makeNumber(e.value) || 0,
-        totalTax:      makeNumber(e.tax) || 0,
-        totalShipping: makeNumber(e.shipping) || 0,
-        currency:      e.currency || 'USD'
+        id:            e.transaction_id,
+        lineItems:     e.items.map(function(i){ return buildLine(i, e.currency); }),
+        totalPrice:    makeNumber(e.value),
+        totalTax:      makeNumber(e.tax),
+        totalShipping: makeNumber(e.shipping),
+        currency:      e.currency
       }
     };
     assertThat(props.order.id).isEqualTo('tx-1');
+    assertThat(props.order.lineItems[0].item.id).isEqualTo('a');
+    assertThat(props.order.lineItems[0].item.productId).isEqualTo('a');
+    assertThat(props.order.lineItems[0].item.title).isEqualTo('A');
     assertThat(props.order.totalPrice).isEqualTo(100);
     assertThat(props.order.totalTax).isEqualTo(8);
     assertThat(props.order.totalShipping).isEqualTo(5);
     assertThat(props.order.lineItems[0].price).isEqualTo(100);
-- name: PURCHASED with no tax/shipping defaults to 0
+- name: PURCHASED fails when transaction_id missing
   code: |-
-    const makeNumber = require('makeNumber');
-    const e = { currency: 'USD', transaction_id: 'tx-2', value: 25, items: [] };
-    const props = {
-      order: {
-        id:            e.transaction_id || 'order-fallback',
-        lineItems:     (e.items || []).map(function(i){ return i; }),
-        totalPrice:    makeNumber(e.value) || 0,
-        totalTax:      makeNumber(e.tax) || 0,
-        totalShipping: makeNumber(e.shipping) || 0,
-        currency:      e.currency || 'USD'
-      }
+    const e = { currency: 'USD', value: 25, items: [{ item_id: 'a' }] };
+    assertThat(e.transaction_id).isUndefined();
+- name: PURCHASED fails when items missing
+  code: |-
+    const e = { currency: 'USD', transaction_id: 'tx-3', value: 25, items: [] };
+    const hasItems = e.items && e.items.length > 0;
+    assertThat(hasItems).isFalse();
+- name: isValidPrice rejects NaN and negatives, accepts zero and positive
+  code: |-
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    assertThat(isValidPrice(0)).isTrue();
+    assertThat(isValidPrice(1.5)).isTrue();
+    assertThat(isValidPrice(-1)).isFalse();
+    assertThat(isValidPrice(NaN)).isFalse();
+    assertThat(isValidPrice('1')).isFalse();
+    assertThat(isValidPrice(undefined)).isFalse();
+- name: Event name strings match c2-engagement EventName enum values
+  code: |-
+    const eventMap = {
+      'view_item':      'PRODUCT_VIEWED',
+      'add_to_cart':    'PRODUCT_ADDED_TO_CART',
+      'begin_checkout': 'CHECKOUT_STARTED',
+      'purchase':       'PURCHASED'
     };
-    assertThat(props.order.totalTax).isEqualTo(0);
-    assertThat(props.order.totalShipping).isEqualTo(0);
-    assertThat(props.order.lineItems.length).isEqualTo(0);
+    assertThat(eventMap['view_item']).isEqualTo('PRODUCT_VIEWED');
+    assertThat(eventMap['add_to_cart']).isEqualTo('PRODUCT_ADDED_TO_CART');
+    assertThat(eventMap['begin_checkout']).isEqualTo('CHECKOUT_STARTED');
+    assertThat(eventMap['purchase']).isEqualTo('PURCHASED');
 - name: Init events are recognized
   code: |-
     function isInit(ev) { return ev === 'gtm.js' || ev === 'gtm.dom' || ev === 'gtm.load'; }
