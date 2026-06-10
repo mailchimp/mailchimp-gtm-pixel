@@ -149,6 +149,13 @@ To publish an update:
    ```
 4. Commit and push. The Gallery picks up the change within a few days.
 
+## Customer testing
+
+For a step-by-step guide to testing this template with a customer (extracting
+the User ID / Connected Site ID from the existing pixel snippet, importing
+the template, smoke-testing in GTM Preview, and verifying events in
+Mailchimp), see [`docs/CUSTOMER_TESTING.md`](./docs/CUSTOMER_TESTING.md).
+
 ## License
 
 Apache License 2.0 — see [`LICENSE`](./LICENSE).
