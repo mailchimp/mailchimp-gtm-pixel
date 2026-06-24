@@ -81,7 +81,7 @@ dataLayer.push({
 | Permission       | Scope                                                                 |
 | ---------------- | --------------------------------------------------------------------- |
 | `logging`        | Debug environment only                                                |
-| `access_globals` | `mcTrack` (r/w/x), `mcIdentify` (r/w/x), `__mcGtmConfig` (r/w)        |
+| `access_globals` | `mcTrack` (r/w/x), `mcIdentify` (r/w/x), `__mcGtmConfig` (r/w), `IntuitPixel` (r) |
 | `get_cookies`    | `_ga`                                                                 |
 | `read_data_layer`| `event`, `ecommerce`, `user_data`                                     |
 | `inject_script`  | `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`      |

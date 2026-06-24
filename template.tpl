@@ -90,6 +90,12 @@ const captureEmail = data.captureEmail;
 const capturePhone = data.capturePhone;
 
 const currentEvent = copyFromDataLayer('event');
+// Snapshot ecommerce/user_data synchronously at tag entry. The send is deferred
+// until the pixel is ready, and other events (e.g. view_item_list) may overwrite
+// the live dataLayer model in the meantime, so reading these later would clobber
+// the payload with the wrong product.
+const ecommerce = copyFromDataLayer('ecommerce');
+const userData = copyFromDataLayer('user_data');
 logToConsole('MC Fired - event context: ' + currentEvent);
 
 if (!userId || !connectedSiteId) {
@@ -120,7 +126,12 @@ function normalizePhone(phone) {
 }
 
 function shimReady() {
-  return !!copyFromWindow('mcTrack');
+  // The bridge shim defines mcTrack, but it forwards to $mcSite.pixel.api.track,
+  // which throws "Pixel not initialized" until the SDK's async init() completes.
+  // window.IntuitPixel is created by the SDK only after Pixel.initialized === true,
+  // so it is the earliest signal that a track/identify call will actually be sent.
+  if (!copyFromWindow('mcTrack')) return false;
+  return !!copyFromWindow('IntuitPixel');
 }
 
 function runIdentify() {
@@ -135,8 +146,6 @@ function runIdentify() {
       logToConsole('MC: identify GOOGLE_CLIENT_ID sent via shim');
     }
   }
-
-  const userData = copyFromDataLayer('user_data');
 
   if (captureEmail && userData && userData.email) {
     sha256(normalizeEmail(userData.email), function(hash) {
@@ -199,7 +208,7 @@ function runTrack() {
     return;
   }
 
-  const e = copyFromDataLayer('ecommerce');
+  const e = ecommerce;
   if (!e) {
     logToConsole('MC: no ecommerce payload');
     return;
@@ -324,7 +333,7 @@ function deferUntilReady(attempts, onReady) {
     onReady();
     return;
   }
-  if (attempts >= 40) {
+  if (attempts >= 10000) {
     logToConsole('MC: shim never became ready.');
     data.gtmOnFailure();
     return;
@@ -504,6 +513,45 @@ ___WEB_PERMISSIONS___
                   {
                     "type": 8,
                     "boolean": true
+                  },
+                  {
+                    "type": 8,
+                    "boolean": false
+                  }
+                ]
+              },
+              {
+                "type": 3,
+                "mapKey": [
+                  {
+                    "type": 1,
+                    "string": "key"
+                  },
+                  {
+                    "type": 1,
+                    "string": "read"
+                  },
+                  {
+                    "type": 1,
+                    "string": "write"
+                  },
+                  {
+                    "type": 1,
+                    "string": "execute"
+                  }
+                ],
+                "mapValue": [
+                  {
+                    "type": 1,
+                    "string": "IntuitPixel"
+                  },
+                  {
+                    "type": 8,
+                    "boolean": true
+                  },
+                  {
+                    "type": 8,
+                    "boolean": false
                   },
                   {
                     "type": 8,
