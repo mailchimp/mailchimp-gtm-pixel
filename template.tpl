@@ -82,6 +82,8 @@ const sha256 = require('sha256');
 const getTimestampMillis = require('getTimestampMillis');
 const JSON = require('JSON');
 const callLater = require('callLater');
+const localStorage = require('localStorage');
+const generateRandom = require('generateRandom');
 
 const userId = data.mcUserId;
 const connectedSiteId = data.mcConnectedSiteId;
@@ -104,7 +106,7 @@ if (!userId || !connectedSiteId) {
   return;
 }
 
-const bridgeUrl = 'https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js';
+const bridgeUrl = 'https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js';
 
 const cfg = copyFromWindow('__mcGtmConfig') || {};
 cfg.userId = userId;
@@ -126,12 +128,14 @@ function normalizePhone(phone) {
 }
 
 function shimReady() {
-  // The bridge shim defines mcTrack, but it forwards to $mcSite.pixel.api.track,
-  // which throws "Pixel not initialized" until the SDK's async init() completes.
-  // window.IntuitPixel is created by the SDK only after Pixel.initialized === true,
-  // so it is the earliest signal that a track/identify call will actually be sent.
+  // mcTrack must exist for us to call it, and the bridge pushes
+  // { event: 'mailchimp.pixel.ready', mcPixelReady: true } to the dataLayer only
+  // after the Mailchimp pixel SDK has finished initializing (forwarding a
+  // track/identify before that point is silently dropped). We use that
+  // bridge-owned dataLayer signal as the single readiness contract instead of
+  // sniffing SDK internals like $mcSite / IntuitPixel.
   if (!copyFromWindow('mcTrack')) return false;
-  return !!copyFromWindow('IntuitPixel');
+  return copyFromDataLayer('mcPixelReady') === true;
 }
 
 function runIdentify() {
@@ -194,6 +198,28 @@ function buildLineItem(item, currency) {
   return lineItem;
 }
 
+// Mailchimp requires a cartId on add_to_cart/begin_checkout and an id on
+// begin_checkout. Some platforms (e.g. WooCommerce, BigCommerce) don't expose
+// these in the dataLayer, so we generate and persist our own stable ids in
+// localStorage. The same cart/checkout id is reused across events for the
+// session and cleared on purchase so the next cart starts fresh.
+const CART_ID_KEY = 'mc_cart_id';
+const CHECKOUT_ID_KEY = 'mc_checkout_id';
+
+function generateId(prefix) {
+  return prefix + '_' + getTimestampMillis() + '_' + generateRandom(100000, 999999);
+}
+
+function getOrCreateId(storageKey, prefix, provided) {
+  if (provided) return provided;
+  let id = localStorage.getItem(storageKey);
+  if (!id) {
+    id = generateId(prefix);
+    localStorage.setItem(storageKey, id);
+  }
+  return id;
+}
+
 function runTrack() {
   const eventMap = {
     'view_item':      'PRODUCT_VIEWED',
@@ -237,32 +263,18 @@ function runTrack() {
       data.gtmOnFailure();
       return;
     }
-    if (!e.cart_id) {
-      logToConsole('MC: add_to_cart missing cart_id');
-      data.gtmOnFailure();
-      return;
-    }
     const lineItem = buildLineItem(item, e.currency);
     if (!lineItem) {
       logToConsole('MC: add_to_cart product missing required id/title/price');
       data.gtmOnFailure();
       return;
     }
+    const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
     props = {
-      cartId: e.cart_id,
+      cartId: cartId,
       product: lineItem
     };
   } else if (mcEvent === 'CHECKOUT_STARTED') {
-    if (!e.checkout_id) {
-      logToConsole('MC: begin_checkout missing checkout_id');
-      data.gtmOnFailure();
-      return;
-    }
-    if (!e.cart_id) {
-      logToConsole('MC: begin_checkout missing cart_id');
-      data.gtmOnFailure();
-      return;
-    }
     if (!e.items || e.items.length === 0) {
       logToConsole('MC: begin_checkout missing items');
       data.gtmOnFailure();
@@ -279,9 +291,11 @@ function runTrack() {
       lineItems.push(li);
     }
     const totalPrice = makeNumber(e.value);
+    const checkoutId = getOrCreateId(CHECKOUT_ID_KEY, 'checkout', e.checkout_id);
+    const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
     const checkout = {
-      id:        e.checkout_id,
-      cartId:    e.cart_id,
+      id:        checkoutId,
+      cartId:    cartId,
       lineItems: lineItems
     };
     if (isValidPrice(totalPrice)) checkout.totalPrice = totalPrice;
@@ -319,7 +333,12 @@ function runTrack() {
     if (isValidPrice(totalTax))      order.totalTax = totalTax;
     if (isValidPrice(totalShipping)) order.totalShipping = totalShipping;
     if (e.currency)                  order.currency = e.currency;
-    if (e.cart_id)                   order.cartId = e.cart_id;
+    const purchaseCartId = e.cart_id ? e.cart_id : localStorage.getItem(CART_ID_KEY);
+    if (purchaseCartId)              order.cartId = purchaseCartId;
+    // Cart converted to an order: clear persisted ids so the next cart session
+    // starts fresh.
+    localStorage.removeItem(CART_ID_KEY);
+    localStorage.removeItem(CHECKOUT_ID_KEY);
     props = { order: order };
   }
 
@@ -328,17 +347,24 @@ function runTrack() {
   logToConsole('MC: mcTrack shim called for ' + mcEvent);
 }
 
-function deferUntilReady(attempts, onReady) {
+// Wait for the bridge's mailchimp.pixel.ready signal. callLater is the only
+// scheduling primitive in the sandbox (no setTimeout/setInterval), so we re-check
+// on each task-queue turn and bound the wait by wall-clock time rather than a
+// fixed attempt count -- callLater turns drain far faster than a network load, so
+// a small attempt cap would give up long before the pixel finishes loading.
+const READY_TIMEOUT_MS = 30000;
+
+function deferUntilReady(startTime, onReady) {
   if (shimReady()) {
     onReady();
     return;
   }
-  if (attempts >= 10000) {
-    logToConsole('MC: shim never became ready.');
+  if (getTimestampMillis() - startTime >= READY_TIMEOUT_MS) {
+    logToConsole('MC: pixel never signalled ready within ' + READY_TIMEOUT_MS + 'ms.');
     data.gtmOnFailure();
     return;
   }
-  callLater(function() { deferUntilReady(attempts + 1, onReady); });
+  callLater(function() { deferUntilReady(startTime, onReady); });
 }
 
 function ensureBridge(onReady) {
@@ -347,7 +373,7 @@ function ensureBridge(onReady) {
     return;
   }
   injectScript(bridgeUrl, function() {
-    deferUntilReady(0, onReady);
+    deferUntilReady(getTimestampMillis(), onReady);
   }, data.gtmOnFailure, 'mailchimp_bridge');
 }
 
@@ -519,45 +545,6 @@ ___WEB_PERMISSIONS___
                     "boolean": false
                   }
                 ]
-              },
-              {
-                "type": 3,
-                "mapKey": [
-                  {
-                    "type": 1,
-                    "string": "key"
-                  },
-                  {
-                    "type": 1,
-                    "string": "read"
-                  },
-                  {
-                    "type": 1,
-                    "string": "write"
-                  },
-                  {
-                    "type": 1,
-                    "string": "execute"
-                  }
-                ],
-                "mapValue": [
-                  {
-                    "type": 1,
-                    "string": "IntuitPixel"
-                  },
-                  {
-                    "type": 8,
-                    "boolean": true
-                  },
-                  {
-                    "type": 8,
-                    "boolean": false
-                  },
-                  {
-                    "type": 8,
-                    "boolean": false
-                  }
-                ]
               }
             ]
           }
@@ -632,6 +619,10 @@ ___WEB_PERMISSIONS___
               {
                 "type": 1,
                 "string": "user_data"
+              },
+              {
+                "type": 1,
+                "string": "mcPixelReady"
               }
             ]
           }
@@ -657,7 +648,91 @@ ___WEB_PERMISSIONS___
             "listItem": [
               {
                 "type": 1,
-                "string": "https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js"
+                "string": "https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "clientAnnotations": {
+      "isEditedByUser": true
+    },
+    "isRequired": true
+  },
+  {
+    "instance": {
+      "key": {
+        "publicId": "access_local_storage",
+        "versionId": "1"
+      },
+      "param": [
+        {
+          "key": "keys",
+          "value": {
+            "type": 2,
+            "listItem": [
+              {
+                "type": 3,
+                "mapKey": [
+                  {
+                    "type": 1,
+                    "string": "key"
+                  },
+                  {
+                    "type": 1,
+                    "string": "read"
+                  },
+                  {
+                    "type": 1,
+                    "string": "write"
+                  }
+                ],
+                "mapValue": [
+                  {
+                    "type": 1,
+                    "string": "mc_cart_id"
+                  },
+                  {
+                    "type": 8,
+                    "boolean": true
+                  },
+                  {
+                    "type": 8,
+                    "boolean": true
+                  }
+                ]
+              },
+              {
+                "type": 3,
+                "mapKey": [
+                  {
+                    "type": 1,
+                    "string": "key"
+                  },
+                  {
+                    "type": 1,
+                    "string": "read"
+                  },
+                  {
+                    "type": 1,
+                    "string": "write"
+                  }
+                ],
+                "mapValue": [
+                  {
+                    "type": 1,
+                    "string": "mc_checkout_id"
+                  },
+                  {
+                    "type": 8,
+                    "boolean": true
+                  },
+                  {
+                    "type": 8,
+                    "boolean": true
+                  }
+                ]
               }
             ]
           }
@@ -677,8 +752,8 @@ ___TESTS___
 scenarios:
 - name: Bridge URL is the only injected script
   code: |-
-    const bridgeUrl = 'https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js';
-    assertThat(bridgeUrl).isEqualTo('https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js');
+    const bridgeUrl = 'https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js';
+    assertThat(bridgeUrl).isEqualTo('https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js');
 - name: GA Client ID parsed correctly from _ga cookie
   code: |-
     const gaCookie = 'GA1.1.378274415.1780324369';
@@ -825,10 +900,31 @@ scenarios:
     assertThat(props.product.quantity).isEqualTo(2);
     assertThat(props.product.price).isEqualTo(40);
     assertThat(props.product.currency).isEqualTo('USD');
-- name: PRODUCT_ADDED_TO_CART fails when cart_id missing
+- name: cart_id is generated and persisted when missing
   code: |-
-    const e = { currency: 'USD', items: [{ item_id: 'x', item_name: 'X', price: 1 }] };
-    assertThat(e.cart_id).isUndefined();
+    const localStorage = require('localStorage');
+    const getTimestampMillis = require('getTimestampMillis');
+    const generateRandom = require('generateRandom');
+    function generateId(prefix) {
+      return prefix + '_' + getTimestampMillis() + '_' + generateRandom(100000, 999999);
+    }
+    function getOrCreateId(storageKey, prefix, provided) {
+      if (provided) return provided;
+      let id = localStorage.getItem(storageKey);
+      if (!id) {
+        id = generateId(prefix);
+        localStorage.setItem(storageKey, id);
+      }
+      return id;
+    }
+    localStorage.removeItem('mc_cart_id');
+    const first = getOrCreateId('mc_cart_id', 'cart', undefined);
+    assertThat(first).isString();
+    // A second read returns the same persisted id.
+    const second = getOrCreateId('mc_cart_id', 'cart', undefined);
+    assertThat(second).isEqualTo(first);
+    // A provided id is used as-is.
+    assertThat(getOrCreateId('mc_cart_id', 'cart', 'cart-abc')).isEqualTo('cart-abc');
 - name: CHECKOUT_STARTED payload matches c2-engagement CheckoutDto
   code: |-
     const makeNumber = require('makeNumber');
@@ -862,12 +958,29 @@ scenarios:
     assertThat(props.checkout.lineItems[0].price).isEqualTo(20);
     assertThat(props.checkout.lineItems[1].price).isEqualTo(30);
     assertThat(props.checkout.totalPrice).isEqualTo(50);
-- name: CHECKOUT_STARTED fails when checkout_id or cart_id missing
+- name: checkout_id is generated and persisted when missing
   code: |-
-    const e1 = { cart_id: 'c', items: [{ item_id: 'a', item_name: 'A', price: 1 }] };
-    assertThat(e1.checkout_id).isUndefined();
-    const e2 = { checkout_id: 'co', items: [{ item_id: 'a', item_name: 'A', price: 1 }] };
-    assertThat(e2.cart_id).isUndefined();
+    const localStorage = require('localStorage');
+    const getTimestampMillis = require('getTimestampMillis');
+    const generateRandom = require('generateRandom');
+    function generateId(prefix) {
+      return prefix + '_' + getTimestampMillis() + '_' + generateRandom(100000, 999999);
+    }
+    function getOrCreateId(storageKey, prefix, provided) {
+      if (provided) return provided;
+      let id = localStorage.getItem(storageKey);
+      if (!id) {
+        id = generateId(prefix);
+        localStorage.setItem(storageKey, id);
+      }
+      return id;
+    }
+    localStorage.removeItem('mc_checkout_id');
+    const first = getOrCreateId('mc_checkout_id', 'checkout', undefined);
+    assertThat(first).isString();
+    const second = getOrCreateId('mc_checkout_id', 'checkout', undefined);
+    assertThat(second).isEqualTo(first);
+    assertThat(getOrCreateId('mc_checkout_id', 'checkout', 'co-1')).isEqualTo('co-1');
 - name: PURCHASED payload matches c2-engagement CheckoutDto (as order)
   code: |-
     const makeNumber = require('makeNumber');

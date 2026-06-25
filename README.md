@@ -11,6 +11,11 @@ The template:
 
 - Loads `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`
   (a tiny shim that exposes `window.mcTrack` and `window.mcIdentify`).
+- Defers every `track`/`identify` until the pixel is initialized. The bridge
+  pushes `{ event: 'mailchimp.pixel.ready', mcPixelReady: true }` to the
+  dataLayer once the Mailchimp SDK has finished loading, and the tag waits for
+  that `mcPixelReady` signal (via `callLater`, bounded to 30s) before sending —
+  so events captured before the pixel is ready aren't dropped.
 - Maps GA4 ecommerce events → Mailchimp events:
   - `view_item` → `PRODUCT_VIEWED`
   - `add_to_cart` → `PRODUCT_ADDED_TO_CART`
@@ -20,6 +25,9 @@ The template:
   - GA `_ga` client id as `GOOGLE_CLIENT_ID`
   - SHA-256 of the normalized email as `EMAIL_SHA256`
   - SHA-256 of the E.164-normalized phone as `PHONE_SHA256`
+- Generates and persists `cart_id` / `checkout_id` in `localStorage` when the
+  dataLayer doesn't provide them, so cart/checkout events are never dropped.
+  The same ids are reused across the session and cleared on `purchase`.
 
 ## Repository layout
 
@@ -54,6 +62,10 @@ The template reads three keys from the dataLayer: `event`, `ecommerce`, and
 (optionally) `user_data`. Standard GA4 ecommerce events work as-is, for
 example:
 
+`ecommerce.cart_id` and `ecommerce.checkout_id` are optional — if present they
+are used as-is, otherwise the template generates and persists its own ids in
+`localStorage`.
+
 ```js
 window.dataLayer = window.dataLayer || [];
 dataLayer.push({ ecommerce: null });
@@ -81,10 +93,11 @@ dataLayer.push({
 | Permission       | Scope                                                                 |
 | ---------------- | --------------------------------------------------------------------- |
 | `logging`        | Debug environment only                                                |
-| `access_globals` | `mcTrack` (r/w/x), `mcIdentify` (r/w/x), `__mcGtmConfig` (r/w), `IntuitPixel` (r) |
+| `access_globals` | `mcTrack` (r/w/x), `mcIdentify` (r/w/x), `__mcGtmConfig` (r/w)         |
 | `get_cookies`    | `_ga`                                                                 |
-| `read_data_layer`| `event`, `ecommerce`, `user_data`                                     |
+| `read_data_layer`| `event`, `ecommerce`, `user_data`, `mcPixelReady`                     |
 | `inject_script`  | `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`      |
+| `access_local_storage` | `mc_cart_id` (r/w), `mc_checkout_id` (r/w)                       |
 
 ## Categories
 
@@ -119,7 +132,8 @@ The `.tpl` file is GTM's custom-template format with sections delimited by
 - Email lowercasing/trimming
 - Phone E.164 digit-stripping
 - GA4 → Mailchimp event-name mapping (including unknown events)
-- Cart-id fallback
+- `cart_id` / `checkout_id` generated and persisted when missing (and used
+  as-is when provided)
 - Line-item mapping, including missing-price → `0` (no `NaN`)
 - ID validation
 - Full payload shape for `PRODUCT_VIEWED`, `PRODUCT_ADDED_TO_CART`,
