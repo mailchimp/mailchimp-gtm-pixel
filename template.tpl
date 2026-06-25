@@ -63,6 +63,40 @@ ___TEMPLATE_PARAMETERS___
     "name": "capturePhone",
     "checkboxText": "Capture and hash phone (PHONE_SHA256)",
     "simpleValueType": true
+  },
+  {
+    "type": "SIMPLE_TABLE",
+    "name": "customEventMappings",
+    "displayName": "Custom event mappings",
+    "help": "Map your own dataLayer event names to Mailchimp events. Your custom event must still push GA4-shaped \u0060ecommerce\u0060 data; only the event name is remapped. Custom rows are added on top of the built-in GA4 mappings \u2014 if a name has both, all of them fire (one Mailchimp event per resolved mapping). Make sure you also add a GTM trigger for your custom event name.",
+    "simpleTableColumns": [
+      {
+        "defaultValue": "",
+        "displayName": "Your dataLayer event name",
+        "name": "dataLayerEvent",
+        "type": "TEXT"
+      },
+      {
+        "defaultValue": "PRODUCT_VIEWED",
+        "displayName": "Mailchimp event",
+        "name": "mailchimpEvent",
+        "type": "SELECT",
+        "selectItems": [
+          { "value": "PRODUCT_VIEWED", "displayValue": "PRODUCT_VIEWED" },
+          { "value": "PRODUCT_CATEGORY_VIEWED", "displayValue": "PRODUCT_CATEGORY_VIEWED" },
+          { "value": "PRODUCT_ADDED_TO_CART", "displayValue": "PRODUCT_ADDED_TO_CART" },
+          { "value": "PRODUCT_REMOVED_FROM_CART", "displayValue": "PRODUCT_REMOVED_FROM_CART" },
+          { "value": "PRODUCT_ADDED_TO_WISHLIST", "displayValue": "PRODUCT_ADDED_TO_WISHLIST" },
+          { "value": "CART_VIEWED", "displayValue": "CART_VIEWED" },
+          { "value": "CHECKOUT_STARTED", "displayValue": "CHECKOUT_STARTED" },
+          { "value": "CHECKOUT_COMPLETED", "displayValue": "CHECKOUT_COMPLETED" },
+          { "value": "PURCHASED", "displayValue": "PURCHASED" },
+          { "value": "PAYMENT_INFO_SUBMITTED", "displayValue": "PAYMENT_INFO_SUBMITTED" },
+          { "value": "SEARCH_SUBMITTED", "displayValue": "SEARCH_SUBMITTED" },
+          { "value": "PAGE_VIEWED", "displayValue": "PAGE_VIEWED" }
+        ]
+      }
+    ]
   }
 ]
 
@@ -98,6 +132,9 @@ const currentEvent = copyFromDataLayer('event');
 // the payload with the wrong product.
 const ecommerce = copyFromDataLayer('ecommerce');
 const userData = copyFromDataLayer('user_data');
+// SEARCH_SUBMITTED reads the top-level GA4 search_term (not under ecommerce).
+// Snapshot it here for the same reason we snapshot ecommerce above.
+const searchTerm = copyFromDataLayer('search_term');
 logToConsole('MC Fired - event context: ' + currentEvent);
 
 if (!userId || !connectedSiteId) {
@@ -220,91 +257,176 @@ function getOrCreateId(storageKey, prefix, provided) {
   return id;
 }
 
-function runTrack() {
-  const eventMap = {
-    'view_item':       'PRODUCT_VIEWED',
-    'select_item':     'PRODUCT_VIEWED',
-    'view_item_list':  'PRODUCT_CATEGORY_VIEWED',
-    'add_to_cart':     'PRODUCT_ADDED_TO_CART',
-    // No "remove" event exists in the public Mailchimp pixel SDK (the documented
-    // set is PRODUCT_VIEWED, PRODUCT_ADDED_TO_CART, PRODUCT_ADDED_TO_WISHLIST,
-    // CART_VIEWED, CHECKOUT_STARTED, PURCHASED, SEARCH_SUBMITTED,
-    // PRODUCT_CATEGORY_VIEWED, PAGE_VIEWED). PRODUCT_REMOVED_FROM_CART is a
-    // best-effort mapping that mirrors the add-to-cart shape; if the backend
-    // EventName enum doesn't accept it the event is silently dropped.
-    'remove_from_cart': 'PRODUCT_REMOVED_FROM_CART',
-    'view_cart':        'CART_VIEWED',
-    'begin_checkout':   'CHECKOUT_STARTED',
-    'purchase':         'PURCHASED'
+// Built-in GA4 -> Mailchimp default mappings, merged with the customer's own
+// rows from the customEventMappings table. Each dataLayer event name resolves to
+// a LIST of Mailchimp events: built-in defaults are single-element lists and
+// custom rows are appended, so a name that has both a built-in and a custom
+// mapping fires each resolved event (no dedup -- the customer owns their rows).
+function buildEventMap() {
+  const map = {
+    'view_item':        ['PRODUCT_VIEWED'],
+    'select_item':      ['PRODUCT_VIEWED'],
+    'view_item_list':   ['PRODUCT_CATEGORY_VIEWED'],
+    'add_to_cart':      ['PRODUCT_ADDED_TO_CART'],
+    'remove_from_cart': ['PRODUCT_REMOVED_FROM_CART'],
+    'view_cart':        ['CART_VIEWED'],
+    'begin_checkout':   ['CHECKOUT_STARTED'],
+    'purchase':         ['PURCHASED'],
+    'search':           ['SEARCH_SUBMITTED'],
+    'add_to_wishlist':  ['PRODUCT_ADDED_TO_WISHLIST'],
+    'add_payment_info': ['PAYMENT_INFO_SUBMITTED'],
+    'page_view':        ['PAGE_VIEWED']
   };
+  const custom = data.customEventMappings;
+  if (custom) {
+    for (let i = 0; i < custom.length; i++) {
+      const row = custom[i];
+      const name = row.dataLayerEvent;
+      const mc = row.mailchimpEvent;
+      if (!name || !mc) continue;
+      if (map[name]) {
+        map[name].push(mc);
+      } else {
+        map[name] = [mc];
+      }
+    }
+  }
+  return map;
+}
 
-  const mcEvent = eventMap[currentEvent];
-  if (!mcEvent) {
-    logToConsole('MC: no event mapping for ' + currentEvent);
-    return;
+// Shared CheckoutDto builder used by CHECKOUT_STARTED and PAYMENT_INFO_SUBMITTED.
+// Returns null (after logging) if items are missing or any line item is invalid.
+function buildCheckout(e, label) {
+  if (!e.items || e.items.length === 0) {
+    logToConsole('MC: ' + label + ' missing items');
+    return null;
+  }
+  const lineItems = [];
+  for (let i = 0; i < e.items.length; i++) {
+    const li = buildLineItem(e.items[i], e.currency);
+    if (!li) {
+      logToConsole('MC: ' + label + ' item[' + i + '] missing required id/title/price');
+      return null;
+    }
+    lineItems.push(li);
+  }
+  const checkoutId = getOrCreateId(CHECKOUT_ID_KEY, 'checkout', e.checkout_id);
+  const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
+  const checkout = {
+    id:        checkoutId,
+    cartId:    cartId,
+    lineItems: lineItems
+  };
+  const totalPrice = makeNumber(e.value);
+  if (isValidPrice(totalPrice)) checkout.totalPrice = totalPrice;
+  if (e.currency) checkout.currency = e.currency;
+  return checkout;
+}
+
+// Shared order (CheckoutDto) builder used by PURCHASED and CHECKOUT_COMPLETED.
+// Returns null (after logging) on missing transaction_id/items or invalid lines.
+function buildOrder(e, label) {
+  if (!e.transaction_id) {
+    logToConsole('MC: ' + label + ' missing transaction_id');
+    return null;
+  }
+  if (!e.items || e.items.length === 0) {
+    logToConsole('MC: ' + label + ' missing items');
+    return null;
+  }
+  const lineItems = [];
+  for (let i = 0; i < e.items.length; i++) {
+    const li = buildLineItem(e.items[i], e.currency);
+    if (!li) {
+      logToConsole('MC: ' + label + ' item[' + i + '] missing required id/title/price');
+      return null;
+    }
+    lineItems.push(li);
+  }
+  const totalPrice = makeNumber(e.value);
+  const totalTax = makeNumber(e.tax);
+  const totalShipping = makeNumber(e.shipping);
+  const order = {
+    id:        e.transaction_id,
+    lineItems: lineItems
+  };
+  if (isValidPrice(totalPrice))    order.totalPrice = totalPrice;
+  if (isValidPrice(totalTax))      order.totalTax = totalTax;
+  if (isValidPrice(totalShipping)) order.totalShipping = totalShipping;
+  if (e.currency)                  order.currency = e.currency;
+  const purchaseCartId = e.cart_id ? e.cart_id : localStorage.getItem(CART_ID_KEY);
+  if (purchaseCartId)              order.cartId = purchaseCartId;
+  return order;
+}
+
+// Build the Mailchimp props object for a single resolved Mailchimp event.
+// Returns the props object on success, or null (after logging) when the payload
+// can't be built so the caller can skip sending that one event.
+function buildProps(mcEvent, e) {
+  // PAGE_VIEWED carries no ecommerce payload.
+  if (mcEvent === 'PAGE_VIEWED') {
+    return {};
   }
 
-  const e = ecommerce;
+  // SEARCH_SUBMITTED reads the top-level GA4 search_term, not ecommerce.
+  if (mcEvent === 'SEARCH_SUBMITTED') {
+    const props = {};
+    if (searchTerm) props.query = makeString(searchTerm);
+    return props;
+  }
+
   if (!e) {
-    logToConsole('MC: no ecommerce payload');
-    return;
+    logToConsole('MC: no ecommerce payload for ' + mcEvent);
+    return null;
   }
-
-  let props = {};
 
   if (mcEvent === 'PRODUCT_VIEWED') {
     const item = e.items && e.items[0];
     if (!item) {
-      logToConsole('MC: view_item missing items[0]');
-      data.gtmOnFailure();
-      return;
+      logToConsole('MC: PRODUCT_VIEWED missing items[0]');
+      return null;
     }
     const variant = buildProductVariant(item, e.currency);
     if (!variant) {
-      logToConsole('MC: view_item product missing required id/title/price');
-      data.gtmOnFailure();
-      return;
+      logToConsole('MC: PRODUCT_VIEWED product missing required id/title/price');
+      return null;
     }
-    props = { product: variant };
-  } else if (mcEvent === 'PRODUCT_ADDED_TO_CART') {
+    return { product: variant };
+  }
+
+  if (mcEvent === 'PRODUCT_ADDED_TO_WISHLIST') {
     const item = e.items && e.items[0];
     if (!item) {
-      logToConsole('MC: add_to_cart missing items[0]');
-      data.gtmOnFailure();
-      return;
+      logToConsole('MC: PRODUCT_ADDED_TO_WISHLIST missing items[0]');
+      return null;
+    }
+    const variant = buildProductVariant(item, e.currency);
+    if (!variant) {
+      logToConsole('MC: PRODUCT_ADDED_TO_WISHLIST product missing required id/title/price');
+      return null;
+    }
+    return { product: variant };
+  }
+
+  if (mcEvent === 'PRODUCT_ADDED_TO_CART' || mcEvent === 'PRODUCT_REMOVED_FROM_CART') {
+    const item = e.items && e.items[0];
+    if (!item) {
+      logToConsole('MC: ' + mcEvent + ' missing items[0]');
+      return null;
     }
     const lineItem = buildLineItem(item, e.currency);
     if (!lineItem) {
-      logToConsole('MC: add_to_cart product missing required id/title/price');
-      data.gtmOnFailure();
-      return;
+      logToConsole('MC: ' + mcEvent + ' product missing required id/title/price');
+      return null;
     }
     const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
-    props = {
+    return {
       cartId: cartId,
       product: lineItem
     };
-  } else if (mcEvent === 'PRODUCT_REMOVED_FROM_CART') {
-    // Best-effort: not a documented SDK event. Mirror the add-to-cart shape so
-    // that if the backend does accept it, the payload is consistent.
-    const item = e.items && e.items[0];
-    if (!item) {
-      logToConsole('MC: remove_from_cart missing items[0]');
-      data.gtmOnFailure();
-      return;
-    }
-    const lineItem = buildLineItem(item, e.currency);
-    if (!lineItem) {
-      logToConsole('MC: remove_from_cart product missing required id/title/price');
-      data.gtmOnFailure();
-      return;
-    }
-    const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
-    props = {
-      cartId: cartId,
-      product: lineItem
-    };
-  } else if (mcEvent === 'CART_VIEWED') {
+  }
+
+  if (mcEvent === 'CART_VIEWED') {
     // GA4 view_cart exposes items[] + value + currency. Mailchimp's CART_VIEWED
     // requires cart.id; lineItems/totalPrice/currency are optional. Be lenient
     // here (skip invalid items rather than failing the whole cart view) since a
@@ -322,8 +444,10 @@ function runTrack() {
     const totalPrice = makeNumber(e.value);
     if (isValidPrice(totalPrice)) cart.totalPrice = totalPrice;
     if (e.currency) cart.currency = e.currency;
-    props = { cart: cart };
-  } else if (mcEvent === 'PRODUCT_CATEGORY_VIEWED') {
+    return { cart: cart };
+  }
+
+  if (mcEvent === 'PRODUCT_CATEGORY_VIEWED') {
     // GA4 view_item_list carries item_list_id / item_list_name (either at the
     // ecommerce root or on the first item). Mailchimp's PRODUCT_CATEGORY_VIEWED
     // takes categoryId / categoryName (both optional). Require at least one so
@@ -332,84 +456,67 @@ function runTrack() {
     const categoryId = e.item_list_id || firstItem.item_list_id;
     const categoryName = e.item_list_name || firstItem.item_list_name || firstItem.item_category;
     if (!categoryId && !categoryName) {
-      logToConsole('MC: view_item_list missing item_list_id/item_list_name');
-      data.gtmOnFailure();
-      return;
+      logToConsole('MC: PRODUCT_CATEGORY_VIEWED missing item_list_id/item_list_name');
+      return null;
     }
-    props = {};
+    const props = {};
     if (categoryId)   props.categoryId = makeString(categoryId);
     if (categoryName) props.categoryName = makeString(categoryName);
-  } else if (mcEvent === 'CHECKOUT_STARTED') {
-    if (!e.items || e.items.length === 0) {
-      logToConsole('MC: begin_checkout missing items');
-      data.gtmOnFailure();
-      return;
-    }
-    const lineItems = [];
-    for (let i = 0; i < e.items.length; i++) {
-      const li = buildLineItem(e.items[i], e.currency);
-      if (!li) {
-        logToConsole('MC: begin_checkout item[' + i + '] missing required id/title/price');
-        data.gtmOnFailure();
-        return;
-      }
-      lineItems.push(li);
-    }
-    const totalPrice = makeNumber(e.value);
-    const checkoutId = getOrCreateId(CHECKOUT_ID_KEY, 'checkout', e.checkout_id);
-    const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
-    const checkout = {
-      id:        checkoutId,
-      cartId:    cartId,
-      lineItems: lineItems
-    };
-    if (isValidPrice(totalPrice)) checkout.totalPrice = totalPrice;
-    if (e.currency) checkout.currency = e.currency;
-    props = { checkout: checkout };
-  } else if (mcEvent === 'PURCHASED') {
-    if (!e.transaction_id) {
-      logToConsole('MC: purchase missing transaction_id');
-      data.gtmOnFailure();
-      return;
-    }
-    if (!e.items || e.items.length === 0) {
-      logToConsole('MC: purchase missing items');
-      data.gtmOnFailure();
-      return;
-    }
-    const lineItems = [];
-    for (let i = 0; i < e.items.length; i++) {
-      const li = buildLineItem(e.items[i], e.currency);
-      if (!li) {
-        logToConsole('MC: purchase item[' + i + '] missing required id/title/price');
-        data.gtmOnFailure();
-        return;
-      }
-      lineItems.push(li);
-    }
-    const totalPrice = makeNumber(e.value);
-    const totalTax = makeNumber(e.tax);
-    const totalShipping = makeNumber(e.shipping);
-    const order = {
-      id:        e.transaction_id,
-      lineItems: lineItems
-    };
-    if (isValidPrice(totalPrice))    order.totalPrice = totalPrice;
-    if (isValidPrice(totalTax))      order.totalTax = totalTax;
-    if (isValidPrice(totalShipping)) order.totalShipping = totalShipping;
-    if (e.currency)                  order.currency = e.currency;
-    const purchaseCartId = e.cart_id ? e.cart_id : localStorage.getItem(CART_ID_KEY);
-    if (purchaseCartId)              order.cartId = purchaseCartId;
+    return props;
+  }
+
+  if (mcEvent === 'CHECKOUT_STARTED' || mcEvent === 'PAYMENT_INFO_SUBMITTED') {
+    const checkout = buildCheckout(e, mcEvent);
+    if (!checkout) return null;
+    return { checkout: checkout };
+  }
+
+  if (mcEvent === 'PURCHASED') {
+    const order = buildOrder(e, mcEvent);
+    if (!order) return null;
     // Cart converted to an order: clear persisted ids so the next cart session
     // starts fresh.
     localStorage.removeItem(CART_ID_KEY);
     localStorage.removeItem(CHECKOUT_ID_KEY);
-    props = { order: order };
+    return { order: order };
   }
 
-  logToConsole('MC Track Event payload: ' + JSON.stringify(props));
-  callInWindow('mcTrack', mcEvent, props);
-  logToConsole('MC: mcTrack shim called for ' + mcEvent);
+  if (mcEvent === 'CHECKOUT_COMPLETED') {
+    const order = buildOrder(e, mcEvent);
+    if (!order) return null;
+    return { order: order };
+  }
+
+  logToConsole('MC: no payload builder for ' + mcEvent);
+  return null;
+}
+
+// Resolve the current dataLayer event to its list of Mailchimp events and fire
+// each one. Returns true if there was nothing to send (no mapping) or at least
+// one event was sent; returns false only when every resolved event failed to
+// build (a genuine failure).
+function runTrack() {
+  const eventMap = buildEventMap();
+  const mcEvents = eventMap[currentEvent];
+  if (!mcEvents || mcEvents.length === 0) {
+    logToConsole('MC: no event mapping for ' + currentEvent);
+    return true;
+  }
+
+  let anySent = false;
+  for (let i = 0; i < mcEvents.length; i++) {
+    const mcEvent = mcEvents[i];
+    const props = buildProps(mcEvent, ecommerce);
+    if (props === null) {
+      logToConsole('MC: skipping ' + mcEvent + ' (payload build failed)');
+      continue;
+    }
+    logToConsole('MC Track Event payload (' + mcEvent + '): ' + JSON.stringify(props));
+    callInWindow('mcTrack', mcEvent, props);
+    logToConsole('MC: mcTrack shim called for ' + mcEvent);
+    anySent = true;
+  }
+  return anySent;
 }
 
 // Wait for the bridge's mailchimp.pixel.ready signal. callLater is the only
@@ -452,8 +559,11 @@ if (isInitEvent) {
 } else {
   ensureBridge(function() {
     runIdentify();
-    runTrack();
-    data.gtmOnSuccess();
+    if (runTrack()) {
+      data.gtmOnSuccess();
+    } else {
+      data.gtmOnFailure();
+    }
   });
 }
 
@@ -688,6 +798,10 @@ ___WEB_PERMISSIONS___
               {
                 "type": 1,
                 "string": "mcPixelReady"
+              },
+              {
+                "type": 1,
+                "string": "search_term"
               }
             ]
           }
@@ -1230,6 +1344,140 @@ scenarios:
     assertThat(props.product.item.id).isEqualTo('sku-2');
     assertThat(props.product.quantity).isEqualTo(2);
     assertThat(props.product.price).isEqualTo(40);
+- name: Built-in defaults include the new buildable events
+  code: |-
+    const map = {
+      'view_item':        ['PRODUCT_VIEWED'],
+      'search':           ['SEARCH_SUBMITTED'],
+      'add_to_wishlist':  ['PRODUCT_ADDED_TO_WISHLIST'],
+      'add_payment_info': ['PAYMENT_INFO_SUBMITTED'],
+      'page_view':        ['PAGE_VIEWED']
+    };
+    assertThat(map['search']).isEqualTo(['SEARCH_SUBMITTED']);
+    assertThat(map['add_to_wishlist']).isEqualTo(['PRODUCT_ADDED_TO_WISHLIST']);
+    assertThat(map['add_payment_info']).isEqualTo(['PAYMENT_INFO_SUBMITTED']);
+    assertThat(map['page_view']).isEqualTo(['PAGE_VIEWED']);
+- name: Custom mapping resolves a non-GA4 event name to a Mailchimp event
+  code: |-
+    function buildEventMap(custom) {
+      const map = { 'add_to_cart': ['PRODUCT_ADDED_TO_CART'] };
+      if (custom) {
+        for (let i = 0; i < custom.length; i++) {
+          const row = custom[i];
+          if (!row.dataLayerEvent || !row.mailchimpEvent) continue;
+          if (map[row.dataLayerEvent]) map[row.dataLayerEvent].push(row.mailchimpEvent);
+          else map[row.dataLayerEvent] = [row.mailchimpEvent];
+        }
+      }
+      return map;
+    }
+    const map = buildEventMap([{ dataLayerEvent: 'addToCart', mailchimpEvent: 'PRODUCT_ADDED_TO_CART' }]);
+    assertThat(map['addToCart']).isEqualTo(['PRODUCT_ADDED_TO_CART']);
+    assertThat(map['add_to_cart']).isEqualTo(['PRODUCT_ADDED_TO_CART']);
+- name: Custom mapping appends to a built-in name and fires all (no dedup)
+  code: |-
+    function buildEventMap(custom) {
+      const map = { 'add_to_cart': ['PRODUCT_ADDED_TO_CART'] };
+      if (custom) {
+        for (let i = 0; i < custom.length; i++) {
+          const row = custom[i];
+          if (!row.dataLayerEvent || !row.mailchimpEvent) continue;
+          if (map[row.dataLayerEvent]) map[row.dataLayerEvent].push(row.mailchimpEvent);
+          else map[row.dataLayerEvent] = [row.mailchimpEvent];
+        }
+      }
+      return map;
+    }
+    // Same name mapped to a different MC event -> both fire.
+    const differing = buildEventMap([{ dataLayerEvent: 'add_to_cart', mailchimpEvent: 'CART_VIEWED' }]);
+    assertThat(differing['add_to_cart']).isEqualTo(['PRODUCT_ADDED_TO_CART', 'CART_VIEWED']);
+    // Redundant row duplicating the built-in -> fires twice (no dedup).
+    const redundant = buildEventMap([{ dataLayerEvent: 'add_to_cart', mailchimpEvent: 'PRODUCT_ADDED_TO_CART' }]);
+    assertThat(redundant['add_to_cart'].length).isEqualTo(2);
+- name: Custom mapping skips rows with a missing name or event
+  code: |-
+    function buildEventMap(custom) {
+      const map = {};
+      if (custom) {
+        for (let i = 0; i < custom.length; i++) {
+          const row = custom[i];
+          if (!row.dataLayerEvent || !row.mailchimpEvent) continue;
+          if (map[row.dataLayerEvent]) map[row.dataLayerEvent].push(row.mailchimpEvent);
+          else map[row.dataLayerEvent] = [row.mailchimpEvent];
+        }
+      }
+      return map;
+    }
+    const map = buildEventMap([
+      { dataLayerEvent: '', mailchimpEvent: 'PRODUCT_VIEWED' },
+      { dataLayerEvent: 'foo', mailchimpEvent: '' },
+      { dataLayerEvent: 'ok', mailchimpEvent: 'PRODUCT_VIEWED' }
+    ]);
+    assertThat(map['ok']).isEqualTo(['PRODUCT_VIEWED']);
+    assertThat(map[''] ).isUndefined();
+    assertThat(map['foo']).isUndefined();
+- name: SEARCH_SUBMITTED maps top-level search_term to query
+  code: |-
+    const makeString = require('makeString');
+    const searchTerm = 'red shoes';
+    const props = {};
+    if (searchTerm) props.query = makeString(searchTerm);
+    assertThat(props.query).isEqualTo('red shoes');
+- name: PRODUCT_ADDED_TO_WISHLIST maps first item to product variant
+  code: |-
+    const makeNumber = require('makeNumber');
+    const e = { currency: 'USD', items: [{ item_id: 'w-1', item_name: 'Wish', price: '9.99' }] };
+    const item = e.items[0];
+    const variant = {
+      id: item.item_id, productId: item.item_id, title: item.item_name,
+      price: makeNumber(item.price), sku: item.item_id, currency: e.currency
+    };
+    const props = { product: variant };
+    assertThat(props.product.id).isEqualTo('w-1');
+    assertThat(props.product.title).isEqualTo('Wish');
+    assertThat(props.product.price).isEqualTo(9.99);
+- name: PAYMENT_INFO_SUBMITTED builds the same CheckoutDto shape as CHECKOUT_STARTED
+  code: |-
+    const makeNumber = require('makeNumber');
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function buildLine(item, currency) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      const qty = makeNumber(item.quantity);
+      return { item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: price, sku: item.item_id, currency: currency }, quantity: qty, price: price * qty, currency: currency };
+    }
+    const e = { currency: 'USD', cart_id: 'cart-1', checkout_id: 'co-1', value: 30, items: [{ item_id: 'a', item_name: 'A', price: 15, quantity: 2 }] };
+    const checkout = { id: e.checkout_id, cartId: e.cart_id, lineItems: e.items.map(function(i){ return buildLine(i, e.currency); }) };
+    const totalPrice = makeNumber(e.value);
+    if (isValidPrice(totalPrice)) checkout.totalPrice = totalPrice;
+    if (e.currency) checkout.currency = e.currency;
+    const props = { checkout: checkout };
+    assertThat(props.checkout.id).isEqualTo('co-1');
+    assertThat(props.checkout.cartId).isEqualTo('cart-1');
+    assertThat(props.checkout.lineItems.length).isEqualTo(1);
+    assertThat(props.checkout.totalPrice).isEqualTo(30);
+- name: CHECKOUT_COMPLETED builds an order like PURCHASED (without clearing ids)
+  code: |-
+    const makeNumber = require('makeNumber');
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function buildLine(item, currency) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      const qty = makeNumber(item.quantity);
+      return { item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: price, sku: item.item_id, currency: currency }, quantity: qty, price: price * qty, currency: currency };
+    }
+    const e = { currency: 'USD', transaction_id: 'tx-9', value: 50, items: [{ item_id: 'a', item_name: 'A', price: 50, quantity: 1 }] };
+    const order = { id: e.transaction_id, lineItems: e.items.map(function(i){ return buildLine(i, e.currency); }) };
+    const totalPrice = makeNumber(e.value);
+    if (isValidPrice(totalPrice)) order.totalPrice = totalPrice;
+    const props = { order: order };
+    assertThat(props.order.id).isEqualTo('tx-9');
+    assertThat(props.order.lineItems[0].item.id).isEqualTo('a');
+    assertThat(props.order.totalPrice).isEqualTo(50);
+- name: PAGE_VIEWED builds an empty (base-only) payload
+  code: |-
+    const props = {};
+    assertThat(props).isEqualTo({});
 
 
 ___NOTES___
