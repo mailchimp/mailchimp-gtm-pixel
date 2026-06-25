@@ -1,48 +1,53 @@
 # mailchimp-gtm-pixel
 
 A Google Tag Manager (GTM) **custom tag template** that loads the Mailchimp
-Site Tracking pixel and translates standard GA4 ecommerce `dataLayer` events
-into Mailchimp's tracking schema.
+Site Tracking pixel and configures it to run in GTM mode. It is a **thin
+loader**: all GA4 → Mailchimp event mapping, payload building, identifier
+capture and cart/checkout id persistence now live in the Mailchimp **pixel
+reporting SDK** (activated via `referenceSystem: 'GTM'`), the same way the Wix
+and Shopify integrations work.
 
 This repository is structured for submission to the
 [GTM Community Template Gallery](https://developers.google.com/tag-platform/tag-manager/templates/gallery).
 
-The template:
+## What the template does
 
-- Loads `https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js`
-  (a tiny shim that exposes `window.mcTrack` and `window.mcIdentify`).
-- Defers every `track`/`identify` until the pixel is initialized. The bridge
-  pushes `{ event: 'mailchimp.pixel.ready', mcPixelReady: true }` to the
-  dataLayer once the Mailchimp SDK has finished loading, and the tag waits for
-  that `mcPixelReady` signal (via `callLater`, bounded to 30s) before sending —
-  so events captured before the pixel is ready aren't dropped.
-- Maps GA4 ecommerce events → Mailchimp events (built-in defaults):
-  - `view_item` → `PRODUCT_VIEWED`
-  - `select_item` → `PRODUCT_VIEWED`
-  - `view_item_list` → `PRODUCT_CATEGORY_VIEWED` (uses `item_list_id` /
-    `item_list_name`, falling back to the first item's list fields / `item_category`)
-  - `add_to_cart` → `PRODUCT_ADDED_TO_CART`
-  - `remove_from_cart` → `PRODUCT_REMOVED_FROM_CART`
-  - `view_cart` → `CART_VIEWED`
-  - `begin_checkout` → `CHECKOUT_STARTED`
-  - `purchase` → `PURCHASED`
-  - `search` → `SEARCH_SUBMITTED` (reads the top-level GA4 `search_term`)
-  - `add_to_wishlist` → `PRODUCT_ADDED_TO_WISHLIST`
-  - `add_payment_info` → `PAYMENT_INFO_SUBMITTED`
-  - `page_view` → `PAGE_VIEWED`
-- Lets you map **your own** dataLayer event names to Mailchimp events via the
-  **Custom event mappings** table (e.g. a site that fires `addToCart` instead of
-  GA4's `add_to_cart`). See [Custom event mappings](#custom-event-mappings)
-  below. Your custom event must still push GA4-shaped `ecommerce` data; only the
-  event name is remapped. `CHECKOUT_COMPLETED` is available as a mapping target
-  here (it has no GA4 default, since GA4 only emits `purchase`).
-- Optionally sends identifiers to Mailchimp:
-  - GA `_ga` client id as `GOOGLE_CLIENT_ID`
-  - SHA-256 of the normalized email as `EMAIL_SHA256`
-  - SHA-256 of the E.164-normalized phone as `PHONE_SHA256`
-- Generates and persists `cart_id` / `checkout_id` in `localStorage` when the
-  dataLayer doesn't provide them, so cart/checkout events are never dropped.
-  The same ids are reused across the session and cleared on `purchase`.
+The tag has exactly two responsibilities:
+
+1. **Publishes its settings to `window.__mcGtmConfig`** so the SDK can read
+   them. The published config is:
+   - `referenceSystem: 'GTM'` — tells the SDK to run its GTM integration.
+   - `userId` / `connectedSiteId` — the per-account pixel identifiers.
+   - `captureGaClientId` / `captureEmail` / `capturePhone` — identifier capture
+     flags.
+   - `customEventMappings` — your custom dataLayer-event-name → Mailchimp-event
+     rows (see [Custom event mappings](#custom-event-mappings)).
+   Existing keys on `window.__mcGtmConfig` are preserved (merged, not replaced).
+2. **Injects the Mailchimp bridge**
+   (`https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js`), which
+   loads the per-account pixel SDK. The injection uses the `mailchimp_bridge`
+   cache token, so the bridge loads only once even if the tag fires repeatedly.
+
+Everything else — reading the GA4 `dataLayer`, translating ecommerce events
+into Mailchimp events, hashing identifiers, generating/persisting
+`cart_id` / `checkout_id`, and waiting for the pixel to be ready — is owned by
+the SDK. Because the SDK reads the `dataLayer` itself, **the tag fires once on a
+single Initialization / All Pages trigger** and no per-event triggers are
+required.
+
+### Bridge / SDK contract
+
+- The template only writes config and loads the bridge.
+- The bridge loads the per-account pixel SDK (`chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js`).
+- The SDK reads `window.__mcGtmConfig`, and because `referenceSystem` is `GTM`,
+  starts its GTM integration: it attaches to the GA4 `dataLayer` (replaying
+  history and patching `push`), translates the built-in GA4 ecommerce events
+  (`view_item`, `select_item`, `view_item_list`, `add_to_cart`,
+  `remove_from_cart`, `view_cart`, `begin_checkout`, `purchase`, `search`,
+  `add_to_wishlist`, `add_payment_info`) into Mailchimp events, applies the
+  `customEventMappings`, captures identifiers, and forwards everything through
+  the standard track pipeline. Page views are emitted by the SDK's normal
+  `autoTrack`, just like every other platform.
 
 ## Repository layout
 
@@ -67,14 +72,11 @@ README.md          # This file
    - Toggle the identifier checkboxes you want enabled.
    - (Optional) Add **Custom event mappings** rows to forward your own
      dataLayer event names — see [Custom event mappings](#custom-event-mappings).
-6. Add triggers:
-   - An **Initialization — All Pages** trigger (warms up the bridge on
-     `gtm.js` / `gtm.dom` / `gtm.load`).
-   - A custom event trigger for each event you want to forward — any built-in
-     GA4 name (`view_item`, `select_item`, `view_item_list`, `add_to_cart`,
-     `remove_from_cart`, `view_cart`, `begin_checkout`, `purchase`, `search`,
-     `add_to_wishlist`, `add_payment_info`, `page_view`) **and** any custom
-     event name you added to the Custom event mappings table.
+6. Add a single trigger:
+   - An **Initialization — All Pages** trigger. That's all that's needed — the
+     SDK reads the `dataLayer` itself, so you do **not** add per-event triggers.
+     (Custom event names from the Custom event mappings table are handled by the
+     SDK from the dataLayer; they don't need GTM triggers either.)
 
 ## Custom event mappings
 
@@ -103,19 +105,20 @@ Behavior:
 - The custom event must still push GA4-shaped `ecommerce` data (and, for
   `SEARCH_SUBMITTED`, the top-level `search_term`); only the event **name** is
   remapped — all payload parsing is reused unchanged.
-- Don't forget to add a GTM **trigger** for your custom event name, otherwise
-  the tag never fires for it.
+- These rows are passed to the SDK via `window.__mcGtmConfig.customEventMappings`
+  and resolved by the SDK from the `dataLayer`. You do **not** need to add a GTM
+  trigger for your custom event name.
 
 ## Required dataLayer shape
 
-For the payload, the template reads from the dataLayer: `event`, `ecommerce`,
-(optionally) `user_data`, and `search_term` (only for `search` /
-`SEARCH_SUBMITTED`). (It also reads the bridge-owned `mcPixelReady` readiness
-signal, which you don't set yourself.) Standard GA4 ecommerce events work as-is,
+You push standard GA4 ecommerce events to the `dataLayer` exactly as you would
+for GA4 — the **SDK** reads `event`, `ecommerce`, (optionally) `user_data`, and
+`search_term` (only for `search` / `SEARCH_SUBMITTED`) directly. The template
+itself does not read the dataLayer. Standard GA4 ecommerce events work as-is,
 for example:
 
 `ecommerce.cart_id` and `ecommerce.checkout_id` are optional — if present they
-are used as-is, otherwise the template generates and persists its own ids in
+are used as-is, otherwise the SDK generates and persists its own ids in
 `localStorage`.
 
 ```js
@@ -145,11 +148,12 @@ dataLayer.push({
 | Permission       | Scope                                                                 |
 | ---------------- | --------------------------------------------------------------------- |
 | `logging`        | Debug environment only                                                |
-| `access_globals` | `mcTrack` (r/w/x), `mcIdentify` (r/w/x), `__mcGtmConfig` (r/w)         |
-| `get_cookies`    | `_ga`                                                                 |
-| `read_data_layer`| `event`, `ecommerce`, `user_data`, `mcPixelReady`, `search_term`      |
+| `access_globals` | `__mcGtmConfig` (read/write)                                           |
 | `inject_script`  | `https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js`      |
-| `access_local_storage` | `mc_cart_id` (r/w), `mc_checkout_id` (r/w)                       |
+
+Cookie access, dataLayer reads, and `localStorage` are no longer requested by
+the template — those operations now happen inside the pixel SDK loaded by the
+bridge.
 
 ## Categories
 
@@ -177,34 +181,21 @@ The `.tpl` file is GTM's custom-template format with sections delimited by
 
 ## Tests
 
-`___TESTS___` covers:
+`___TESTS___` runs the template via `runCode(...)` with mocked sandbox APIs and
+covers the thin loader's behavior:
 
-- Bridge URL constant
-- `_ga` cookie → GA client id parsing
-- Email lowercasing/trimming
-- Phone E.164 digit-stripping
-- GA4 → Mailchimp event-name mapping (including unknown events)
-- Built-in defaults for the newer events (`search` → `SEARCH_SUBMITTED`,
-  `add_to_wishlist` → `PRODUCT_ADDED_TO_WISHLIST`, `add_payment_info` →
-  `PAYMENT_INFO_SUBMITTED`, `page_view` → `PAGE_VIEWED`)
-- Custom event mappings: resolving a non-GA4 name, appending to a built-in name
-  and firing all (no dedup), and skipping rows with a missing name/event
-- New payload builders: `SEARCH_SUBMITTED` (from `search_term`),
-  `PRODUCT_ADDED_TO_WISHLIST`, `PAYMENT_INFO_SUBMITTED`, `CHECKOUT_COMPLETED`,
-  and the base-only `PAGE_VIEWED`
-- `cart_id` / `checkout_id` generated and persisted when missing (and used
-  as-is when provided)
-- Line-item mapping (`id` / `title` / `price` required; items with a
-  missing/invalid/negative price are rejected, never coerced — no `NaN`)
-- ID/price validation (`isValidPrice` rejects `NaN` and negatives)
-- Full payload shape for `PRODUCT_VIEWED`, `PRODUCT_ADDED_TO_CART`,
-  `CHECKOUT_STARTED`, `PURCHASED` (with and without tax/shipping)
-- New mappings: `view_item_list` → `PRODUCT_CATEGORY_VIEWED` (with first-item
-  fallback and the no-category failure case), `view_cart` → `CART_VIEWED`
-  (including the lenient skip-invalid-items path), `select_item` →
-  `PRODUCT_VIEWED`, and `remove_from_cart` → `PRODUCT_REMOVED_FROM_CART`
-- Init-event recognition (`gtm.js` / `gtm.dom` / `gtm.load`)
-- `__mcGtmConfig` merge preserves pre-existing keys
+- Missing `mcUserId` or `mcConnectedSiteId` fails the tag (`gtmOnFailure`) and
+  does not inject the bridge.
+- Valid ids publish `window.__mcGtmConfig` with `referenceSystem: 'GTM'`,
+  `userId`, `connectedSiteId`, the capture flags and `customEventMappings`, and
+  inject the bridge from the expected URL with the `mailchimp_bridge` cache
+  token, then call `gtmOnSuccess`.
+- Existing `__mcGtmConfig` keys are preserved (merge, not replace).
+- A bridge load failure propagates to `gtmOnFailure`.
+- `customEventMappings` rows pass through to the SDK config untouched.
+
+The GA4 → Mailchimp mapping, payload builder and identifier tests now live with
+the SDK (`pixel-reporting-sdk`), since that's where the logic moved.
 
 Run them from inside the GTM template editor via **Run tests**.
 
