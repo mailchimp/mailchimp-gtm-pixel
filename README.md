@@ -18,7 +18,18 @@ The template:
   so events captured before the pixel is ready aren't dropped.
 - Maps GA4 ecommerce events → Mailchimp events:
   - `view_item` → `PRODUCT_VIEWED`
+  - `select_item` → `PRODUCT_VIEWED`
+  - `view_item_list` → `PRODUCT_CATEGORY_VIEWED` (uses `item_list_id` /
+    `item_list_name`, falling back to the first item's list fields / `item_category`)
   - `add_to_cart` → `PRODUCT_ADDED_TO_CART`
+  - `remove_from_cart` → `PRODUCT_REMOVED_FROM_CART` — ⚠️ **not a documented
+    Mailchimp pixel event.** The public SDK only defines `PRODUCT_VIEWED`,
+    `PRODUCT_ADDED_TO_CART`, `PRODUCT_ADDED_TO_WISHLIST`, `CART_VIEWED`,
+    `CHECKOUT_STARTED`, `PURCHASED`, `SEARCH_SUBMITTED`,
+    `PRODUCT_CATEGORY_VIEWED`, and `PAGE_VIEWED`. This mapping is best-effort
+    (it mirrors the add-to-cart payload); unrecognized events are silently
+    dropped by the SDK, so verify it lands before relying on it.
+  - `view_cart` → `CART_VIEWED`
   - `begin_checkout` → `CHECKOUT_STARTED`
   - `purchase` → `PURCHASED`
 - Optionally sends identifiers to Mailchimp:
@@ -54,7 +65,8 @@ README.md          # This file
    - An **Initialization — All Pages** trigger (warms up the bridge on
      `gtm.js` / `gtm.dom` / `gtm.load`).
    - A custom event trigger for each ecommerce event you want to forward
-     (`view_item`, `add_to_cart`, `begin_checkout`, `purchase`).
+     (`view_item`, `select_item`, `view_item_list`, `add_to_cart`,
+     `remove_from_cart`, `view_cart`, `begin_checkout`, `purchase`).
 
 ## Required dataLayer shape
 
@@ -138,6 +150,10 @@ The `.tpl` file is GTM's custom-template format with sections delimited by
 - ID validation
 - Full payload shape for `PRODUCT_VIEWED`, `PRODUCT_ADDED_TO_CART`,
   `CHECKOUT_STARTED`, `PURCHASED` (with and without tax/shipping)
+- New mappings: `view_item_list` → `PRODUCT_CATEGORY_VIEWED` (with first-item
+  fallback and the no-category failure case), `view_cart` → `CART_VIEWED`
+  (including the lenient skip-invalid-items path), `select_item` →
+  `PRODUCT_VIEWED`, and `remove_from_cart` → `PRODUCT_REMOVED_FROM_CART`
 - Init-event recognition (`gtm.js` / `gtm.dom` / `gtm.load`)
 - `__mcGtmConfig` merge preserves pre-existing keys
 

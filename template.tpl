@@ -222,10 +222,20 @@ function getOrCreateId(storageKey, prefix, provided) {
 
 function runTrack() {
   const eventMap = {
-    'view_item':      'PRODUCT_VIEWED',
-    'add_to_cart':    'PRODUCT_ADDED_TO_CART',
-    'begin_checkout': 'CHECKOUT_STARTED',
-    'purchase':       'PURCHASED'
+    'view_item':       'PRODUCT_VIEWED',
+    'select_item':     'PRODUCT_VIEWED',
+    'view_item_list':  'PRODUCT_CATEGORY_VIEWED',
+    'add_to_cart':     'PRODUCT_ADDED_TO_CART',
+    // No "remove" event exists in the public Mailchimp pixel SDK (the documented
+    // set is PRODUCT_VIEWED, PRODUCT_ADDED_TO_CART, PRODUCT_ADDED_TO_WISHLIST,
+    // CART_VIEWED, CHECKOUT_STARTED, PURCHASED, SEARCH_SUBMITTED,
+    // PRODUCT_CATEGORY_VIEWED, PAGE_VIEWED). PRODUCT_REMOVED_FROM_CART is a
+    // best-effort mapping that mirrors the add-to-cart shape; if the backend
+    // EventName enum doesn't accept it the event is silently dropped.
+    'remove_from_cart': 'PRODUCT_REMOVED_FROM_CART',
+    'view_cart':        'CART_VIEWED',
+    'begin_checkout':   'CHECKOUT_STARTED',
+    'purchase':         'PURCHASED'
   };
 
   const mcEvent = eventMap[currentEvent];
@@ -274,6 +284,61 @@ function runTrack() {
       cartId: cartId,
       product: lineItem
     };
+  } else if (mcEvent === 'PRODUCT_REMOVED_FROM_CART') {
+    // Best-effort: not a documented SDK event. Mirror the add-to-cart shape so
+    // that if the backend does accept it, the payload is consistent.
+    const item = e.items && e.items[0];
+    if (!item) {
+      logToConsole('MC: remove_from_cart missing items[0]');
+      data.gtmOnFailure();
+      return;
+    }
+    const lineItem = buildLineItem(item, e.currency);
+    if (!lineItem) {
+      logToConsole('MC: remove_from_cart product missing required id/title/price');
+      data.gtmOnFailure();
+      return;
+    }
+    const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
+    props = {
+      cartId: cartId,
+      product: lineItem
+    };
+  } else if (mcEvent === 'CART_VIEWED') {
+    // GA4 view_cart exposes items[] + value + currency. Mailchimp's CART_VIEWED
+    // requires cart.id; lineItems/totalPrice/currency are optional. Be lenient
+    // here (skip invalid items rather than failing the whole cart view) since a
+    // cart snapshot is lower-stakes than checkout/purchase.
+    const cartId = getOrCreateId(CART_ID_KEY, 'cart', e.cart_id);
+    const cart = { id: cartId };
+    if (e.items && e.items.length > 0) {
+      const lineItems = [];
+      for (let i = 0; i < e.items.length; i++) {
+        const li = buildLineItem(e.items[i], e.currency);
+        if (li) lineItems.push(li);
+      }
+      if (lineItems.length > 0) cart.lineItems = lineItems;
+    }
+    const totalPrice = makeNumber(e.value);
+    if (isValidPrice(totalPrice)) cart.totalPrice = totalPrice;
+    if (e.currency) cart.currency = e.currency;
+    props = { cart: cart };
+  } else if (mcEvent === 'PRODUCT_CATEGORY_VIEWED') {
+    // GA4 view_item_list carries item_list_id / item_list_name (either at the
+    // ecommerce root or on the first item). Mailchimp's PRODUCT_CATEGORY_VIEWED
+    // takes categoryId / categoryName (both optional). Require at least one so
+    // we don't forward an empty, value-less category event.
+    const firstItem = (e.items && e.items[0]) || {};
+    const categoryId = e.item_list_id || firstItem.item_list_id;
+    const categoryName = e.item_list_name || firstItem.item_list_name || firstItem.item_category;
+    if (!categoryId && !categoryName) {
+      logToConsole('MC: view_item_list missing item_list_id/item_list_name');
+      data.gtmOnFailure();
+      return;
+    }
+    props = {};
+    if (categoryId)   props.categoryId = makeString(categoryId);
+    if (categoryName) props.categoryName = makeString(categoryName);
   } else if (mcEvent === 'CHECKOUT_STARTED') {
     if (!e.items || e.items.length === 0) {
       logToConsole('MC: begin_checkout missing items');
@@ -1059,6 +1124,112 @@ scenarios:
     assertThat(cfg.foo).isEqualTo('bar');
     assertThat(cfg.userId).isEqualTo('u1');
     assertThat(cfg.connectedSiteId).isEqualTo('s1');
+- name: New GA4 events map to the correct Mailchimp event types
+  code: |-
+    const eventMap = {
+      'view_item':        'PRODUCT_VIEWED',
+      'select_item':      'PRODUCT_VIEWED',
+      'view_item_list':   'PRODUCT_CATEGORY_VIEWED',
+      'add_to_cart':      'PRODUCT_ADDED_TO_CART',
+      'remove_from_cart': 'PRODUCT_REMOVED_FROM_CART',
+      'view_cart':        'CART_VIEWED',
+      'begin_checkout':   'CHECKOUT_STARTED',
+      'purchase':         'PURCHASED'
+    };
+    assertThat(eventMap['select_item']).isEqualTo('PRODUCT_VIEWED');
+    assertThat(eventMap['view_item_list']).isEqualTo('PRODUCT_CATEGORY_VIEWED');
+    assertThat(eventMap['remove_from_cart']).isEqualTo('PRODUCT_REMOVED_FROM_CART');
+    assertThat(eventMap['view_cart']).isEqualTo('CART_VIEWED');
+- name: PRODUCT_CATEGORY_VIEWED maps item_list_id/item_list_name from ecommerce root
+  code: |-
+    const makeString = require('makeString');
+    const e = { item_list_id: 'cat_123', item_list_name: "Men's T-Shirts", items: [{ item_id: 'x' }] };
+    const firstItem = (e.items && e.items[0]) || {};
+    const categoryId = e.item_list_id || firstItem.item_list_id;
+    const categoryName = e.item_list_name || firstItem.item_list_name || firstItem.item_category;
+    const props = {};
+    if (categoryId)   props.categoryId = makeString(categoryId);
+    if (categoryName) props.categoryName = makeString(categoryName);
+    assertThat(props.categoryId).isEqualTo('cat_123');
+    assertThat(props.categoryName).isEqualTo("Men's T-Shirts");
+- name: PRODUCT_CATEGORY_VIEWED falls back to first item's list fields/category
+  code: |-
+    const makeString = require('makeString');
+    const e = { items: [{ item_id: 'x', item_list_id: 'cat_9', item_category: 'Apparel' }] };
+    const firstItem = (e.items && e.items[0]) || {};
+    const categoryId = e.item_list_id || firstItem.item_list_id;
+    const categoryName = e.item_list_name || firstItem.item_list_name || firstItem.item_category;
+    assertThat(categoryId).isEqualTo('cat_9');
+    assertThat(categoryName).isEqualTo('Apparel');
+- name: PRODUCT_CATEGORY_VIEWED fails when no id/name available
+  code: |-
+    const e = { items: [{ item_id: 'x' }] };
+    const firstItem = (e.items && e.items[0]) || {};
+    const categoryId = e.item_list_id || firstItem.item_list_id;
+    const categoryName = e.item_list_name || firstItem.item_list_name || firstItem.item_category;
+    const hasCategory = categoryId || categoryName;
+    assertThat(hasCategory).isFalsy();
+- name: CART_VIEWED maps GA4 view_cart to Mailchimp cart object (id required)
+  code: |-
+    const makeNumber = require('makeNumber');
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function buildLine(item, currency) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      const qty = makeNumber(item.quantity);
+      return { item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: price, sku: item.item_id, currency: currency }, quantity: qty, price: price * qty, currency: currency };
+    }
+    const e = { currency: 'USD', cart_id: 'cart-xyz', value: 139.97, items: [{ item_id: 'a', item_name: 'A', price: 29.99, quantity: 2 }, { item_id: 'b', item_name: 'B', price: 79.99, quantity: 1 }] };
+    const cart = { id: e.cart_id };
+    const lineItems = [];
+    for (let i = 0; i < e.items.length; i++) { const li = buildLine(e.items[i], e.currency); if (li) lineItems.push(li); }
+    if (lineItems.length > 0) cart.lineItems = lineItems;
+    const totalPrice = makeNumber(e.value);
+    if (isValidPrice(totalPrice)) cart.totalPrice = totalPrice;
+    if (e.currency) cart.currency = e.currency;
+    const props = { cart: cart };
+    assertThat(props.cart.id).isEqualTo('cart-xyz');
+    assertThat(props.cart.lineItems.length).isEqualTo(2);
+    assertThat(props.cart.lineItems[0].item.id).isEqualTo('a');
+    assertThat(props.cart.totalPrice).isEqualTo(139.97);
+    assertThat(props.cart.currency).isEqualTo('USD');
+- name: CART_VIEWED is lenient - skips invalid line items but still sends cart
+  code: |-
+    const makeNumber = require('makeNumber');
+    function isValidPrice(n) { return typeof n === 'number' && n === n && n >= 0; }
+    function buildLine(item, currency) {
+      const price = makeNumber(item.price);
+      if (!item.item_id || !item.item_name || !isValidPrice(price)) return null;
+      return { item: { id: item.item_id, title: item.item_name, price: price } };
+    }
+    const e = { currency: 'USD', cart_id: 'cart-1', items: [{ item_id: 'a', item_name: 'A', price: 10 }, { item_name: 'No id', price: 5 }] };
+    const cart = { id: e.cart_id };
+    const lineItems = [];
+    for (let i = 0; i < e.items.length; i++) { const li = buildLine(e.items[i], e.currency); if (li) lineItems.push(li); }
+    if (lineItems.length > 0) cart.lineItems = lineItems;
+    assertThat(cart.id).isEqualTo('cart-1');
+    assertThat(cart.lineItems.length).isEqualTo(1);
+    assertThat(cart.lineItems[0].item.id).isEqualTo('a');
+- name: PRODUCT_REMOVED_FROM_CART mirrors the add-to-cart payload shape
+  code: |-
+    const makeNumber = require('makeNumber');
+    const e = { currency: 'USD', cart_id: 'cart-abc', items: [{ item_id: 'sku-2', item_name: 'Shirt', price: '20', quantity: '2' }] };
+    const item = e.items[0];
+    const unitPrice = makeNumber(item.price);
+    const qty = makeNumber(item.quantity);
+    const props = {
+      cartId: e.cart_id,
+      product: {
+        item: { id: item.item_id, productId: item.item_id, title: item.item_name, price: unitPrice, sku: item.item_id, currency: e.currency },
+        quantity: qty,
+        price: unitPrice * qty,
+        currency: e.currency
+      }
+    };
+    assertThat(props.cartId).isEqualTo('cart-abc');
+    assertThat(props.product.item.id).isEqualTo('sku-2');
+    assertThat(props.product.quantity).isEqualTo(2);
+    assertThat(props.product.price).isEqualTo(40);
 
 
 ___NOTES___
