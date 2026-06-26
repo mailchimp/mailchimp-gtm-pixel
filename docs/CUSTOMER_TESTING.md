@@ -51,10 +51,11 @@ https://chimpstatic.com/mcjs-connected/<USER_ID>/<CONNECTED_SITE_ID>.js
 template (`mcUserId` and `mcConnectedSiteId`).
 
 > **Note:** The customer **does not need to keep the snippet installed** for
-> the GTM template to work. The template loads its own bridge
-> (`gtm-bridge.js`) from `chimpstatic.com` and uses these two IDs to attribute
-> events. If the snippet is left in place alongside the GTM tag, the
-> customer may see double-tracking — remove the snippet before going live.
+> the GTM template to work. The template injects the per-account Mailchimp
+> pixel SDK (`chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js`)
+> and uses these two IDs to attribute events. If the snippet is left in place
+> alongside the GTM tag, the customer may see double-tracking — remove the
+> snippet before going live.
 
 ---
 
@@ -82,15 +83,17 @@ repo's `template.tpl` at the root.
      `user_data.email` on the dataLayer.
    - **Capture and hash phone (PHONE_SHA256)** → ✅ if the site exposes
      `user_data.phone_number` on the dataLayer.
-3. **Triggering →** add the following triggers:
+3. **Triggering →** add a **single** trigger:
 
    | Trigger | Type | Fires on |
    | --- | --- | --- |
-   | `MC – Init` | **Initialization — All Pages** | `gtm.js` / `gtm.dom` / `gtm.load` (warms up the bridge) |
-   | `MC – view_item` | **Custom Event** | Event name `view_item` |
-   | `MC – add_to_cart` | **Custom Event** | Event name `add_to_cart` |
-   | `MC – begin_checkout` | **Custom Event** | Event name `begin_checkout` |
-   | `MC – purchase` | **Custom Event** | Event name `purchase` |
+   | `MC – Init` | **Initialization — All Pages** | `gtm.js` / `gtm.dom` / `gtm.load` |
+
+   > **No per-event triggers are required.** The tag fires once to inject the
+   > SDK; the SDK then reads the GA4 `dataLayer` itself (replaying history and
+   > intercepting future `push`es) and translates ecommerce events on its own.
+   > Adding custom-event triggers for `view_item`, `add_to_cart`, etc. is
+   > unnecessary and would only re-inject the (cached) SDK.
 
 4. Name the tag `Mailchimp – Site Tracking` and **Save**.
 
@@ -109,11 +112,9 @@ repo's `template.tpl` at the root.
 
    | Check | Pass criteria |
    | --- | --- |
-   | The `Mailchimp – Site Tracking` tag shows under **Tags Fired** | ✅ |
-   | No tag appears under **Tags Not Fired** for the relevant event | ✅ |
-   | Browser DevTools → **Console** shows `MC Fired – event context: <event>` | ✅ |
-   | DevTools → **Network** shows a request to `chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js` (loaded **once** on Init, then cached) | ✅ |
-   | DevTools → **Network** shows beacons to Mailchimp (`me-1.mailchimp.com` or `*.list-manage.com`) after each event | ✅ |
+   | The `Mailchimp – Site Tracking` tag shows under **Tags Fired** on the Initialization event | ✅ |
+   | DevTools → **Network** shows a request to `chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js` (loaded **once** on Init, then cached) | ✅ |
+   | DevTools → **Network** shows beacons to Mailchimp (`me-1.mailchimp.com` or `*.list-manage.com`) after each ecommerce event | ✅ |
 
 If any of these fail, jump to **Section 8 – Troubleshooting**.
 
@@ -216,9 +217,10 @@ and silently drops repeats.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| Tag does not fire in Preview | Missing or wrong trigger | Re-check that each GA4 event name has a matching custom-event trigger attached. |
+| Tag does not fire in Preview | Missing Initialization trigger | Re-check that the tag has the **Initialization — All Pages** trigger attached. |
+| Ecommerce events don't reach Mailchimp even though the tag fired | The SDK couldn't read the GA4 `dataLayer` | Confirm the site actually pushes GA4 ecommerce events (`view_item`, `add_to_cart`, …) to `window.dataLayer`. The SDK only translates events that GA4 emits. |
 | Tag fires but Console shows `Mailchimp Error: Missing User ID or Connected Site ID` | Empty or wrong IDs in the tag config | Re-copy from the snippet URL. **No quotes**, no whitespace. The User ID is numeric; the Connected Site ID is a long hex string. |
-| `gtm-bridge.js` doesn't load (404 / blocked in Network tab) | Content Security Policy on the customer site blocks `chimpstatic.com` | Add `https://chimpstatic.com` to the site's CSP `script-src` directive. |
+| The pixel SDK doesn't load (404 / blocked in Network tab) | Content Security Policy on the customer site blocks `chimpstatic.com` | Add `https://chimpstatic.com` to the site's CSP `script-src` directive. |
 | Tag fires, no errors, but nothing appears in Mailchimp | Wrong Connected Site ID, or events going to a different audience | Verify the IDs against **Audience → Website → Connected sites → View code** for the *exact* audience you're checking. |
 | Duplicate events in Mailchimp | The old snippet is still installed alongside the GTM tag | Remove the `<script id="mcjs">` snippet from the site source; keep only the GTM tag. |
 | `purchase` doesn't appear, but other events do | Same `transaction_id` reused across tests | Use a new ID per test (e.g. `tx-test-<timestamp>`). |
@@ -226,8 +228,9 @@ and silently drops repeats.
 | Events fire on initial pageload but not on subsequent SPA route changes | SPA isn't pushing GA4 events on virtual page transitions | Out of scope for this template — fix the site's GA4 instrumentation first. |
 
 To pull more detailed logs, enable **Preview mode** in GTM and watch the
-browser console — the template logs `MC Fired – event context: <event>` and
-any error conditions through GTM's `logging` permission (debug-only).
+browser console — the template logs ID-validation errors through GTM's
+`logging` permission (debug-only). Once the SDK is loaded, event-level
+diagnostics come from the pixel SDK itself, not the template.
 
 ---
 
@@ -236,9 +239,11 @@ any error conditions through GTM's `logging` permission (debug-only).
 Before declaring the test successful and handing off, confirm all of the
 following with the customer:
 
-- [ ] `Mailchimp – Site Tracking` tag fires in GTM Preview for **all four**
-      ecommerce events.
-- [ ] `gtm-bridge.js` loads exactly once per pageview (Network tab).
+- [ ] `Mailchimp – Site Tracking` tag fires in GTM Preview on the
+      **Initialization** event.
+- [ ] The per-account pixel SDK
+      (`chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js`)
+      loads exactly once per pageview (Network tab).
 - [ ] Mailchimp's **Audience → Contacts** activity feed shows the test
       contact with `PRODUCT_VIEWED`, `PRODUCT_ADDED_TO_CART`,
       `CHECKOUT_STARTED`, and `PURCHASED` events with the expected

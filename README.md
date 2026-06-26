@@ -16,17 +16,18 @@ The tag has exactly two responsibilities:
 
 1. **Publishes its settings to `window.__mcGtmConfig`** so the SDK can read
    them. The published config is:
-   - `referenceSystem: 'GTM'` — tells the SDK to run its GTM integration.
    - `userId` / `connectedSiteId` — the per-account pixel identifiers.
    - `captureGaClientId` / `captureEmail` / `capturePhone` — identifier capture
      flags.
    - `customEventMappings` — your custom dataLayer-event-name → Mailchimp-event
      rows (see [Custom event mappings](#custom-event-mappings)).
    Existing keys on `window.__mcGtmConfig` are preserved (merged, not replaced).
-2. **Injects the Mailchimp bridge**
-   (`https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js`), which
-   loads the per-account pixel SDK. The injection uses the `mailchimp_bridge`
-   cache token, so the bridge loads only once even if the tag fires repeatedly.
+2. **Injects the per-account Mailchimp pixel SDK** directly
+   (`https://chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js`).
+   The injection uses the `mailchimp_pixel` cache token, so the SDK loads only
+   once even if the tag fires repeatedly. There is no separate "bridge" shim —
+   the SDK does its own tracking, so the old `window.mcTrack` / `window.mcIdentify`
+   wrappers are gone.
 
 Everything else — reading the GA4 `dataLayer`, translating ecommerce events
 into Mailchimp events, hashing identifiers, generating/persisting
@@ -35,11 +36,16 @@ the SDK. Because the SDK reads the `dataLayer` itself, **the tag fires once on a
 single Initialization / All Pages trigger** and no per-event triggers are
 required.
 
-### Bridge / SDK contract
+### SDK contract
 
-- The template only writes config and loads the bridge.
-- The bridge loads the per-account pixel SDK (`chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js`).
-- The SDK reads `window.__mcGtmConfig`, and because `referenceSystem` is `GTM`,
+- The template only writes `window.__mcGtmConfig` (before injecting the script,
+  so the SDK can read it while booting) and injects the per-account SDK loader.
+- That loader must initialize the pixel in GTM mode —
+  `pixel.init({ referenceSystem: 'GTM' })` — reading `window.__mcGtmConfig`.
+  This is the one piece that lives server-side (in the per-account `mcjs`
+  bootstrap), not in this template: a GTM custom template can only set globals
+  and inject scripts; it cannot call `pixel.init()` itself.
+- Once in GTM mode, the SDK reads `window.__mcGtmConfig` for its settings and
   starts its GTM integration: it attaches to the GA4 `dataLayer` (replaying
   history and patching `push`), translates the built-in GA4 ecommerce events
   (`view_item`, `select_item`, `view_item_list`, `add_to_cart`,
@@ -149,11 +155,12 @@ dataLayer.push({
 | ---------------- | --------------------------------------------------------------------- |
 | `logging`        | Debug environment only                                                |
 | `access_globals` | `__mcGtmConfig` (read/write)                                           |
-| `inject_script`  | `https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js`      |
+| `inject_script`  | `https://chimpstatic.com/mcjs-connected/js/users/*`                   |
 
 Cookie access, dataLayer reads, and `localStorage` are no longer requested by
-the template — those operations now happen inside the pixel SDK loaded by the
-bridge.
+the template — those operations now happen inside the pixel SDK that the
+template injects. The `inject_script` scope uses a `*` wildcard because the SDK
+URL embeds the per-account `userId` / `connectedSiteId`.
 
 ## Categories
 
@@ -185,13 +192,13 @@ The `.tpl` file is GTM's custom-template format with sections delimited by
 covers the thin loader's behavior:
 
 - Missing `mcUserId` or `mcConnectedSiteId` fails the tag (`gtmOnFailure`) and
-  does not inject the bridge.
-- Valid ids publish `window.__mcGtmConfig` with `referenceSystem: 'GTM'`,
-  `userId`, `connectedSiteId`, the capture flags and `customEventMappings`, and
-  inject the bridge from the expected URL with the `mailchimp_bridge` cache
-  token, then call `gtmOnSuccess`.
+  does not inject the SDK.
+- Valid ids publish `window.__mcGtmConfig` with `userId`, `connectedSiteId`, the
+  capture flags and `customEventMappings`, and inject the per-account SDK from
+  the expected URL with the `mailchimp_pixel` cache token, then call
+  `gtmOnSuccess`.
 - Existing `__mcGtmConfig` keys are preserved (merge, not replace).
-- A bridge load failure propagates to `gtmOnFailure`.
+- An SDK load failure propagates to `gtmOnFailure`.
 - `customEventMappings` rows pass through to the SDK config untouched.
 
 The GA4 → Mailchimp mapping, payload builder and identifier tests now live with

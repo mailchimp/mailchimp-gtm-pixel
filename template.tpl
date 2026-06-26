@@ -123,14 +123,15 @@ if (!userId || !connectedSiteId) {
 // and Shopify integrations work. This tag only:
 //   1. publishes the template settings to window.__mcGtmConfig so the SDK can
 //      read them (capture flags + custom event mappings), and
-//   2. injects the Mailchimp bridge, which loads the per-account pixel SDK and
-//      initialises it in GTM mode.
+//   2. injects the per-account Mailchimp pixel SDK, which reads
+//      window.__mcGtmConfig and initialises itself in GTM mode.
 // Because the SDK reads the dataLayer itself, this tag fires once on a single
 // Initialization / All Pages trigger -- no per-event triggers are required.
-const bridgeUrl = 'https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js';
+// Note: __mcGtmConfig must be set before the SDK script is injected so the SDK
+// can read it as it boots.
+const sdkUrl = 'https://chimpstatic.com/mcjs-connected/js/users/' + userId + '/' + connectedSiteId + '.js';
 
 const cfg = copyFromWindow('__mcGtmConfig') || {};
-cfg.referenceSystem = 'GTM';
 cfg.userId = userId;
 cfg.connectedSiteId = connectedSiteId;
 cfg.captureGaClientId = data.captureGaClientId;
@@ -139,7 +140,7 @@ cfg.capturePhone = data.capturePhone;
 cfg.customEventMappings = data.customEventMappings;
 setInWindow('__mcGtmConfig', cfg, true);
 
-injectScript(bridgeUrl, data.gtmOnSuccess, data.gtmOnFailure, 'mailchimp_bridge');
+injectScript(sdkUrl, data.gtmOnSuccess, data.gtmOnFailure, 'mailchimp_pixel');
 
 ___WEB_PERMISSIONS___
 
@@ -240,7 +241,7 @@ ___WEB_PERMISSIONS___
             "listItem": [
               {
                 "type": 1,
-                "string": "https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js"
+                "string": "https://chimpstatic.com/mcjs-connected/js/users/*"
               }
             ]
           }
@@ -258,7 +259,7 @@ ___WEB_PERMISSIONS___
 ___TESTS___
 
 scenarios:
-- name: Missing User ID fails the tag and does not inject the bridge
+- name: Missing User ID fails the tag and does not inject the SDK
   code: |-
     let injected = false;
     mock('injectScript', function() { injected = true; });
@@ -278,7 +279,7 @@ scenarios:
     assertApi('gtmOnFailure').wasCalled();
     assertApi('gtmOnSuccess').wasNotCalled();
     assertThat(injected).isEqualTo(false);
-- name: Valid IDs publish GTM config and inject the bridge
+- name: Valid IDs publish GTM config and inject the per-account SDK
   code: |-
     let injectedUrl;
     let cacheToken;
@@ -295,15 +296,14 @@ scenarios:
     mockData.customEventMappings = [{ dataLayerEvent: 'addToCart', mailchimpEvent: 'PRODUCT_ADDED_TO_CART' }];
     runCode(mockData);
     assertThat(storedKey).isEqualTo('__mcGtmConfig');
-    assertThat(storedConfig.referenceSystem).isEqualTo('GTM');
     assertThat(storedConfig.userId).isEqualTo('user-1');
     assertThat(storedConfig.connectedSiteId).isEqualTo('site-1');
     assertThat(storedConfig.captureGaClientId).isEqualTo(true);
     assertThat(storedConfig.captureEmail).isEqualTo(true);
     assertThat(storedConfig.capturePhone).isEqualTo(false);
     assertThat(storedConfig.customEventMappings.length).isEqualTo(1);
-    assertThat(injectedUrl).isEqualTo('https://chimpstatic.com/mcjs-connected/bridge/v2/gtm-bridge.js');
-    assertThat(cacheToken).isEqualTo('mailchimp_bridge');
+    assertThat(injectedUrl).isEqualTo('https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js');
+    assertThat(cacheToken).isEqualTo('mailchimp_pixel');
     assertApi('gtmOnSuccess').wasCalled();
     assertApi('gtmOnFailure').wasNotCalled();
 - name: Existing __mcGtmConfig keys are preserved on merge
@@ -317,8 +317,7 @@ scenarios:
     runCode(mockData);
     assertThat(storedConfig.existing).isEqualTo('keep');
     assertThat(storedConfig.userId).isEqualTo('user-1');
-    assertThat(storedConfig.referenceSystem).isEqualTo('GTM');
-- name: Bridge load failure propagates to gtmOnFailure
+- name: SDK load failure propagates to gtmOnFailure
   code: |-
     mock('copyFromWindow', function() { return undefined; });
     mock('setInWindow', function() { return true; });
