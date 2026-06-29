@@ -135,8 +135,8 @@ if (!snippetUrl || snippetUrl.indexOf(URL_PREFIX) !== 0) {
 //      read them (capture flags + custom event mappings), and
 //   2. injects the Mailchimp pixel SDK from the snippet URL, which reads
 //      window.__mcGtmConfig and initialises itself in GTM mode.
-// Because the SDK reads the dataLayer itself, this tag fires once on a single
-// Initialization / All Pages trigger -- no per-event triggers are required.
+// Because the SDK reads the dataLayer itself, this tag only needs a single
+// All Pages (Page View) trigger -- no per-event or ecommerce triggers required.
 // Note: __mcGtmConfig must be set before the SDK script is injected so the SDK
 // can read it as it boots.
 const cfg = copyFromWindow('__mcGtmConfig') || {};

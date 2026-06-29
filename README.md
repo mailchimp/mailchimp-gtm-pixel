@@ -21,8 +21,8 @@ You add the tag once and give it your Mailchimp snippet URL. From then on:
 
 The tag itself is a thin loader: it injects the Mailchimp pixel SDK and the SDK
 does all the work. Because the SDK reads the `dataLayer` directly, **the tag only
-needs a single Initialization / All Pages trigger** — you do not add per-event
-triggers.
+needs a single All Pages (Page View) trigger** — you do not add per-event or
+ecommerce triggers.
 
 ## Before you start
 
@@ -72,8 +72,9 @@ is all the template needs.
    - **Capture and hash phone (PHONE_SHA256)** — enable if your site pushes
      `user_data.phone_number` to the `dataLayer`.
    - *(Optional)* **Custom event mappings** — see below.
-3. Add a single trigger: **Initialization — All Pages**. That's all that's
-   needed; no per-event triggers.
+3. Add a single trigger: **All Pages** (Page View). That's all that's needed —
+   no per-event or ecommerce triggers. The injected SDK reads the `dataLayer`
+   itself and translates ecommerce events on its own.
 4. Save, then **Submit / Publish** the container.
 
 ## Supported events
@@ -168,10 +169,10 @@ template.
 The template's unit tests live in the `___TESTS___` section of `template.tpl`
 and run inside the GTM template editor via **Run tests**.
 
-To verify end-to-end, use GTM **Preview** mode: confirm the tag fires on the
-Initialization event, the pixel SDK loads once from your snippet URL (Network
-tab), and your GA4 ecommerce events show up in Mailchimp (ecommerce analytics,
-segmentation, and automations).
+To verify end-to-end, use GTM **Preview** mode: confirm the tag fires on page
+load (the All Pages trigger), the pixel SDK loads once from your snippet URL
+(Network tab), and your GA4 ecommerce events show up in Mailchimp (ecommerce
+analytics, segmentation, and automations).
 
 ## License
 
