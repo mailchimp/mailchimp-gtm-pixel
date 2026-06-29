@@ -68,9 +68,13 @@ is all the template needs.
    - **Mailchimp snippet URL** — the URL you copied in step 1.
    - **Capture Google Analytics Client ID** — recommended.
    - **Capture and hash email (EMAIL_SHA256)** — enable if your site pushes
-     `user_data.email` to the `dataLayer`.
+     `user_data.email` to the `dataLayer`, or you map a **User-Provided Data
+     variable** (see below).
    - **Capture and hash phone (PHONE_SHA256)** — enable if your site pushes
-     `user_data.phone_number` to the `dataLayer`.
+     `user_data.phone_number` to the `dataLayer`, or you map a **User-Provided
+     Data variable** (see below).
+   - *(Optional)* **User-Provided Data variable** — see
+     [Capturing user data](#capturing-user-data).
    - *(Optional)* **Custom event mappings** — see below.
 3. Add a single trigger: **All Pages** (Page View). That's all that's needed —
    no per-event or ecommerce triggers. The injected SDK reads the `dataLayer`
@@ -128,6 +132,33 @@ dataLayer.push({
 `ecommerce.cart_id` and `ecommerce.checkout_id` are optional. If present they're
 used as-is; otherwise the SDK generates and persists its own IDs in
 `localStorage`.
+
+## Capturing user data
+
+There are two ways to capture a customer's email/phone, both gated by the
+**Capture and hash email/phone** checkboxes:
+
+1. **From the `dataLayer`** — if your site pushes a `user_data` object alongside
+   your events (as shown above), the SDK reads `user_data.email` /
+   `user_data.phone_number` directly.
+
+2. **From a GTM "User-Provided Data" variable** — in some setups the email/phone
+   is collected **inside GTM** and **never reaches the `dataLayer`** — so the SDK
+   can't see it. In that case, create or reuse a GTM **User-Provided Data**
+   variable and map it into the tag's **User-Provided Data variable** field so
+   GTM passes the value to the SDK.
+
+   The variable must resolve to an object with `email` and/or `phone_number`:
+
+   ```js
+   { email: 'shopper@example.com', phone_number: '+1 (555) 123-4567' }
+   ```
+
+   GTM resolves the variable in the container when the tag fires and passes the
+   value to the SDK, which **normalizes and SHA-256 hashes** it before sending
+   (`EMAIL_SHA256` / `PHONE_SHA256`). Only the fields whose capture checkbox is
+   enabled are forwarded. Provide **plaintext** values — the SDK does the
+   hashing, so don't map an already-hashed variable.
 
 ## Custom event mappings
 
