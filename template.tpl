@@ -36,15 +36,22 @@ ___TEMPLATE_PARAMETERS___
 [
   {
     "type": "TEXT",
-    "name": "mcUserId",
-    "displayName": "Mailchimp User ID",
-    "simpleValueType": true
-  },
-  {
-    "type": "TEXT",
-    "name": "mcConnectedSiteId",
-    "displayName": "Mailchimp Connected Site ID",
-    "simpleValueType": true
+    "name": "mcSnippetUrl",
+    "displayName": "Mailchimp snippet URL",
+    "help": "Paste the URL from your Mailchimp Site Tracking snippet. In Mailchimp, go to \u003cb\u003eIntegrations\u003c/b\u003e and open your site integration, then copy the \u0060https://chimpstatic.com/mcjs-connected/js/users/.../....js\u0060 URL from inside the script tag.",
+    "simpleValueType": true,
+    "valueValidators": [
+      {
+        "type": "NON_EMPTY"
+      },
+      {
+        "type": "REGEX",
+        "args": [
+          "^https://chimpstatic\\.com/mcjs-connected/js/users/.+\\.js$"
+        ],
+        "errorMessage": "Enter a valid Mailchimp snippet URL (https://chimpstatic.com/mcjs-connected/js/users/.../....js)."
+      }
+    ]
   },
   {
     "type": "CHECKBOX",
@@ -108,39 +115,38 @@ const copyFromWindow = require('copyFromWindow');
 const setInWindow = require('setInWindow');
 const logToConsole = require('logToConsole');
 
-const userId = data.mcUserId;
-const connectedSiteId = data.mcConnectedSiteId;
+const snippetUrl = data.mcSnippetUrl;
 
-if (!userId || !connectedSiteId) {
-  logToConsole('Mailchimp Error: Missing User ID or Connected Site ID.');
+// Only the official Mailchimp pixel host + per-account loader path is allowed.
+// This double-checks the field validation and keeps the inject_script
+// permission tightly scoped.
+const URL_PREFIX = 'https://chimpstatic.com/mcjs-connected/js/users/';
+
+if (!snippetUrl || snippetUrl.indexOf(URL_PREFIX) !== 0) {
+  logToConsole('Mailchimp Error: Enter a valid Mailchimp snippet URL (' + URL_PREFIX + '.../....js).');
   data.gtmOnFailure();
   return;
 }
 
 // The Mailchimp GTM template is a thin loader. All GA4 -> Mailchimp event
-// mapping, payload building and identifier capture now live in the Pixel
-// Reporting SDK (activated via referenceSystem: 'GTM'), exactly the way the Wix
-// and Shopify integrations work. This tag only:
+// mapping, payload building and identifier capture live in the Mailchimp pixel
+// SDK that this tag injects. This tag only:
 //   1. publishes the template settings to window.__mcGtmConfig so the SDK can
 //      read them (capture flags + custom event mappings), and
-//   2. injects the per-account Mailchimp pixel SDK, which reads
+//   2. injects the Mailchimp pixel SDK from the snippet URL, which reads
 //      window.__mcGtmConfig and initialises itself in GTM mode.
-// Because the SDK reads the dataLayer itself, this tag fires once on a single
-// Initialization / All Pages trigger -- no per-event triggers are required.
+// Because the SDK reads the dataLayer itself, this tag only needs a single
+// All Pages (Page View) trigger -- no per-event or ecommerce triggers required.
 // Note: __mcGtmConfig must be set before the SDK script is injected so the SDK
 // can read it as it boots.
-const sdkUrl = 'https://chimpstatic.com/mcjs-connected/js/users/' + userId + '/' + connectedSiteId + '.js';
-
 const cfg = copyFromWindow('__mcGtmConfig') || {};
-cfg.userId = userId;
-cfg.connectedSiteId = connectedSiteId;
 cfg.captureGaClientId = data.captureGaClientId;
 cfg.captureEmail = data.captureEmail;
 cfg.capturePhone = data.capturePhone;
 cfg.customEventMappings = data.customEventMappings;
 setInWindow('__mcGtmConfig', cfg, true);
 
-injectScript(sdkUrl, data.gtmOnSuccess, data.gtmOnFailure, 'mailchimp_pixel');
+injectScript(snippetUrl, data.gtmOnSuccess, data.gtmOnFailure, 'mailchimp_pixel');
 
 ___WEB_PERMISSIONS___
 
@@ -259,27 +265,25 @@ ___WEB_PERMISSIONS___
 ___TESTS___
 
 scenarios:
-- name: Missing User ID fails the tag and does not inject the SDK
+- name: Missing snippet URL fails the tag and does not inject the SDK
   code: |-
     let injected = false;
     mock('injectScript', function() { injected = true; });
-    mockData.mcUserId = '';
-    mockData.mcConnectedSiteId = 'site-1';
+    mockData.mcSnippetUrl = '';
     runCode(mockData);
     assertApi('gtmOnFailure').wasCalled();
     assertApi('gtmOnSuccess').wasNotCalled();
     assertThat(injected).isEqualTo(false);
-- name: Missing Connected Site ID fails the tag
+- name: Snippet URL from a non-Mailchimp host fails the tag and does not inject
   code: |-
     let injected = false;
     mock('injectScript', function() { injected = true; });
-    mockData.mcUserId = 'user-1';
-    mockData.mcConnectedSiteId = '';
+    mockData.mcSnippetUrl = 'https://evil.example.com/mcjs-connected/js/users/user-1/site-1.js';
     runCode(mockData);
     assertApi('gtmOnFailure').wasCalled();
     assertApi('gtmOnSuccess').wasNotCalled();
     assertThat(injected).isEqualTo(false);
-- name: Valid IDs publish GTM config and inject the per-account SDK
+- name: Valid snippet URL publishes GTM config and injects the SDK
   code: |-
     let injectedUrl;
     let cacheToken;
@@ -288,16 +292,13 @@ scenarios:
     mock('copyFromWindow', function() { return undefined; });
     mock('setInWindow', function(key, value) { storedKey = key; storedConfig = value; return true; });
     mock('injectScript', function(url, onSuccess, onFailure, token) { injectedUrl = url; cacheToken = token; onSuccess(); });
-    mockData.mcUserId = 'user-1';
-    mockData.mcConnectedSiteId = 'site-1';
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
     mockData.captureGaClientId = true;
     mockData.captureEmail = true;
     mockData.capturePhone = false;
     mockData.customEventMappings = [{ dataLayerEvent: 'addToCart', mailchimpEvent: 'PRODUCT_ADDED_TO_CART' }];
     runCode(mockData);
     assertThat(storedKey).isEqualTo('__mcGtmConfig');
-    assertThat(storedConfig.userId).isEqualTo('user-1');
-    assertThat(storedConfig.connectedSiteId).isEqualTo('site-1');
     assertThat(storedConfig.captureGaClientId).isEqualTo(true);
     assertThat(storedConfig.captureEmail).isEqualTo(true);
     assertThat(storedConfig.capturePhone).isEqualTo(false);
@@ -312,28 +313,26 @@ scenarios:
     mock('copyFromWindow', function() { return { existing: 'keep' }; });
     mock('setInWindow', function(key, value) { storedConfig = value; return true; });
     mock('injectScript', function(url, onSuccess) { onSuccess(); });
-    mockData.mcUserId = 'user-1';
-    mockData.mcConnectedSiteId = 'site-1';
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureEmail = true;
     runCode(mockData);
     assertThat(storedConfig.existing).isEqualTo('keep');
-    assertThat(storedConfig.userId).isEqualTo('user-1');
+    assertThat(storedConfig.captureEmail).isEqualTo(true);
 - name: SDK load failure propagates to gtmOnFailure
   code: |-
     mock('copyFromWindow', function() { return undefined; });
     mock('setInWindow', function() { return true; });
     mock('injectScript', function(url, onSuccess, onFailure) { onFailure(); });
-    mockData.mcUserId = 'user-1';
-    mockData.mcConnectedSiteId = 'site-1';
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
     runCode(mockData);
     assertApi('gtmOnFailure').wasCalled();
-- name: customEventMappings defaults through to the SDK config untouched
+- name: customEventMappings pass through to the SDK config untouched
   code: |-
     let storedConfig;
     mock('copyFromWindow', function() { return undefined; });
     mock('setInWindow', function(key, value) { storedConfig = value; return true; });
     mock('injectScript', function(url, onSuccess) { onSuccess(); });
-    mockData.mcUserId = 'user-1';
-    mockData.mcConnectedSiteId = 'site-1';
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
     mockData.customEventMappings = [
       { dataLayerEvent: 'addToCart', mailchimpEvent: 'PRODUCT_ADDED_TO_CART' },
       { dataLayerEvent: 'viewPage', mailchimpEvent: 'PAGE_VIEWED' }
