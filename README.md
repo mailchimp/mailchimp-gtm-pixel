@@ -1,29 +1,63 @@
 # mailchimp-gtm-pixel
 
 A Google Tag Manager (GTM) **custom tag template** that loads the Mailchimp
-Site Tracking pixel and translates standard GA4 ecommerce `dataLayer` events
-into Mailchimp's tracking schema.
+Site Tracking pixel and configures it to run in GTM mode. It is a **thin
+loader**: all GA4 → Mailchimp event mapping, payload building, identifier
+capture and cart/checkout id persistence now live in the Mailchimp **pixel
+reporting SDK** (activated via `referenceSystem: 'GTM'`), the same way the Wix
+and Shopify integrations work.
 
 This repository is structured for submission to the
 [GTM Community Template Gallery](https://developers.google.com/tag-platform/tag-manager/templates/gallery).
 
-The template:
+## What the template does
 
-- Loads `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`
-  (a tiny shim that exposes `window.mcTrack` and `window.mcIdentify`).
-- Maps GA4 ecommerce events → Mailchimp events:
-  - `view_item` → `PRODUCT_VIEWED`
-  - `add_to_cart` → `PRODUCT_ADDED_TO_CART`
-  - `begin_checkout` → `CHECKOUT_STARTED`
-  - `purchase` → `PURCHASED`
-- Optionally sends identifiers to Mailchimp:
-  - GA `_ga` client id as `GOOGLE_CLIENT_ID`
-  - SHA-256 of the normalized email as `EMAIL_SHA256`
-  - SHA-256 of the E.164-normalized phone as `PHONE_SHA256`
+The tag has exactly two responsibilities:
+
+1. **Publishes its settings to `window.__mcGtmConfig`** so the SDK can read
+   them. The published config is:
+   - `userId` / `connectedSiteId` — the per-account pixel identifiers.
+   - `captureGaClientId` / `captureEmail` / `capturePhone` — identifier capture
+     flags.
+   - `customEventMappings` — your custom dataLayer-event-name → Mailchimp-event
+     rows (see [Custom event mappings](#custom-event-mappings)).
+   Existing keys on `window.__mcGtmConfig` are preserved (merged, not replaced).
+2. **Injects the per-account Mailchimp pixel SDK** directly
+   (`https://chimpstatic.com/mcjs-connected/js/users/<userId>/<connectedSiteId>.js`).
+   The injection uses the `mailchimp_pixel` cache token, so the SDK loads only
+   once even if the tag fires repeatedly. There is no separate "bridge" shim —
+   the SDK does its own tracking, so the old `window.mcTrack` / `window.mcIdentify`
+   wrappers are gone.
+
+Everything else — reading the GA4 `dataLayer`, translating ecommerce events
+into Mailchimp events, hashing identifiers, generating/persisting
+`cart_id` / `checkout_id`, and waiting for the pixel to be ready — is owned by
+the SDK. Because the SDK reads the `dataLayer` itself, **the tag fires once on a
+single Initialization / All Pages trigger** and no per-event triggers are
+required.
+
+### SDK contract
+
+- The template only writes `window.__mcGtmConfig` (before injecting the script,
+  so the SDK can read it while booting) and injects the per-account SDK loader.
+- That loader must initialize the pixel in GTM mode —
+  `pixel.init({ referenceSystem: 'GTM' })` — reading `window.__mcGtmConfig`.
+  This is the one piece that lives server-side (in the per-account `mcjs`
+  bootstrap), not in this template: a GTM custom template can only set globals
+  and inject scripts; it cannot call `pixel.init()` itself.
+- Once in GTM mode, the SDK reads `window.__mcGtmConfig` for its settings and
+  starts its GTM integration: it attaches to the GA4 `dataLayer` (replaying
+  history and patching `push`), translates the built-in GA4 ecommerce events
+  (`view_item`, `select_item`, `view_item_list`, `add_to_cart`,
+  `remove_from_cart`, `view_cart`, `begin_checkout`, `purchase`, `search`,
+  `add_to_wishlist`, `add_payment_info`) into Mailchimp events, applies the
+  `customEventMappings`, captures identifiers, and forwards everything through
+  the standard track pipeline. Page views are emitted by the SDK's normal
+  `autoTrack`, just like every other platform.
 
 ## Repository layout
 
-The Gallery requires these three files at the repo root, on `main`:
+The Gallery requires these files at the repo root, on `main`:
 
 ```
 template.tpl       # GTM Custom Template (TAG, WEB) — exported from the editor
@@ -42,17 +76,56 @@ README.md          # This file
    - **Mailchimp User ID** (`mcUserId`)
    - **Mailchimp Connected Site ID** (`mcConnectedSiteId`)
    - Toggle the identifier checkboxes you want enabled.
-6. Add triggers:
-   - An **Initialization — All Pages** trigger (warms up the bridge on
-     `gtm.js` / `gtm.dom` / `gtm.load`).
-   - A custom event trigger for each ecommerce event you want to forward
-     (`view_item`, `add_to_cart`, `begin_checkout`, `purchase`).
+   - (Optional) Add **Custom event mappings** rows to forward your own
+     dataLayer event names — see [Custom event mappings](#custom-event-mappings).
+6. Add a single trigger:
+   - An **Initialization — All Pages** trigger. That's all that's needed — the
+     SDK reads the `dataLayer` itself, so you do **not** add per-event triggers.
+     (Custom event names from the Custom event mappings table are handled by the
+     SDK from the dataLayer; they don't need GTM triggers either.)
+
+## Custom event mappings
+
+Some sites don't fire the GA4-standard event names (for example a storefront
+that pushes `addToCart` instead of `add_to_cart`). The **Custom event mappings**
+table lets you map any dataLayer event name to a Mailchimp event without code
+changes. Each row has:
+
+- **Your dataLayer event name** — the `event` string your site pushes
+  (e.g. `addToCart`).
+- **Mailchimp event** — the target, chosen from: `PRODUCT_VIEWED`,
+  `PRODUCT_CATEGORY_VIEWED`, `PRODUCT_ADDED_TO_CART`,
+  `PRODUCT_REMOVED_FROM_CART`, `PRODUCT_ADDED_TO_WISHLIST`, `CART_VIEWED`,
+  `CHECKOUT_STARTED`, `CHECKOUT_COMPLETED`, `PURCHASED`,
+  `PAYMENT_INFO_SUBMITTED`, `SEARCH_SUBMITTED`, `PAGE_VIEWED`.
+
+Behavior:
+
+- Custom rows are **added on top of** the built-in GA4 mappings; the defaults
+  keep working out of the box.
+- Resolution is **fire-all, no dedup**: if a single event name resolves to more
+  than one Mailchimp event (e.g. you map `add_to_cart` to a second target, or
+  add a row that duplicates a built-in), every resolved mapping fires as its own
+  Mailchimp event. A site that fires *only* `addToCart` (never `add_to_cart`)
+  never double-fires, since the built-in name simply won't match.
+- The custom event must still push GA4-shaped `ecommerce` data (and, for
+  `SEARCH_SUBMITTED`, the top-level `search_term`); only the event **name** is
+  remapped — all payload parsing is reused unchanged.
+- These rows are passed to the SDK via `window.__mcGtmConfig.customEventMappings`
+  and resolved by the SDK from the `dataLayer`. You do **not** need to add a GTM
+  trigger for your custom event name.
 
 ## Required dataLayer shape
 
-The template reads three keys from the dataLayer: `event`, `ecommerce`, and
-(optionally) `user_data`. Standard GA4 ecommerce events work as-is, for
-example:
+You push standard GA4 ecommerce events to the `dataLayer` exactly as you would
+for GA4 — the **SDK** reads `event`, `ecommerce`, (optionally) `user_data`, and
+`search_term` (only for `search` / `SEARCH_SUBMITTED`) directly. The template
+itself does not read the dataLayer. Standard GA4 ecommerce events work as-is,
+for example:
+
+`ecommerce.cart_id` and `ecommerce.checkout_id` are optional — if present they
+are used as-is, otherwise the SDK generates and persists its own ids in
+`localStorage`.
 
 ```js
 window.dataLayer = window.dataLayer || [];
@@ -81,10 +154,13 @@ dataLayer.push({
 | Permission       | Scope                                                                 |
 | ---------------- | --------------------------------------------------------------------- |
 | `logging`        | Debug environment only                                                |
-| `access_globals` | `mcTrack` (r/w/x), `mcIdentify` (r/w/x), `__mcGtmConfig` (r/w)        |
-| `get_cookies`    | `_ga`                                                                 |
-| `read_data_layer`| `event`, `ecommerce`, `user_data`                                     |
-| `inject_script`  | `https://chimpstatic.com/mcjs-connected/bridge/v1/gtm-bridge.js`      |
+| `access_globals` | `__mcGtmConfig` (read/write)                                           |
+| `inject_script`  | `https://chimpstatic.com/mcjs-connected/js/users/*`                   |
+
+Cookie access, dataLayer reads, and `localStorage` are no longer requested by
+the template — those operations now happen inside the pixel SDK that the
+template injects. The `inject_script` scope uses a `*` wildcard because the SDK
+URL embeds the per-account `userId` / `connectedSiteId`.
 
 ## Categories
 
@@ -112,20 +188,21 @@ The `.tpl` file is GTM's custom-template format with sections delimited by
 
 ## Tests
 
-`___TESTS___` covers:
+`___TESTS___` runs the template via `runCode(...)` with mocked sandbox APIs and
+covers the thin loader's behavior:
 
-- Bridge URL constant
-- `_ga` cookie → GA client id parsing
-- Email lowercasing/trimming
-- Phone E.164 digit-stripping
-- GA4 → Mailchimp event-name mapping (including unknown events)
-- Cart-id fallback
-- Line-item mapping, including missing-price → `0` (no `NaN`)
-- ID validation
-- Full payload shape for `PRODUCT_VIEWED`, `PRODUCT_ADDED_TO_CART`,
-  `CHECKOUT_STARTED`, `PURCHASED` (with and without tax/shipping)
-- Init-event recognition (`gtm.js` / `gtm.dom` / `gtm.load`)
-- `__mcGtmConfig` merge preserves pre-existing keys
+- Missing `mcUserId` or `mcConnectedSiteId` fails the tag (`gtmOnFailure`) and
+  does not inject the SDK.
+- Valid ids publish `window.__mcGtmConfig` with `userId`, `connectedSiteId`, the
+  capture flags and `customEventMappings`, and inject the per-account SDK from
+  the expected URL with the `mailchimp_pixel` cache token, then call
+  `gtmOnSuccess`.
+- Existing `__mcGtmConfig` keys are preserved (merge, not replace).
+- An SDK load failure propagates to `gtmOnFailure`.
+- `customEventMappings` rows pass through to the SDK config untouched.
+
+The GA4 → Mailchimp mapping, payload builder and identifier tests now live with
+the SDK (`pixel-reporting-sdk`), since that's where the logic moved.
 
 Run them from inside the GTM template editor via **Run tests**.
 
