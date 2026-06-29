@@ -142,12 +142,11 @@ There are two ways to capture a customer's email/phone, both gated by the
    your events (as shown above), the SDK reads `user_data.email` /
    `user_data.phone_number` directly.
 
-2. **From a GTM "User-Provided Data" variable** — in many setups (for example
-   Google's automatic enhanced conversions, or Site Kit's WooCommerce
-   integration) the email/phone is collected **inside GTM** and **never reaches
-   the `dataLayer`** — so the SDK can't see it. In that case, create or reuse a
-   GTM **User-Provided Data** variable and map it into the tag's **User-Provided
-   Data variable** field.
+2. **From a GTM "User-Provided Data" variable** — in some setups the email/phone
+   is collected **inside GTM** and **never reaches the `dataLayer`** — so the SDK
+   can't see it. In that case, create or reuse a GTM **User-Provided Data**
+   variable and map it into the tag's **User-Provided Data variable** field so
+   GTM passes the value to the SDK.
 
    The variable must resolve to an object with `email` and/or `phone_number`:
 

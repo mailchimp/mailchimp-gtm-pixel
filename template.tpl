@@ -75,7 +75,7 @@ ___TEMPLATE_PARAMETERS___
     "type": "TEXT",
     "name": "userProvidedData",
     "displayName": "User-Provided Data variable",
-    "help": "Optional. Map your GTM \u201cUser-Provided Data\u201d variable (or any variable that resolves to an object with \u0060email\u0060 and/or \u0060phone_number\u0060). Use this when the email/phone is collected by GTM itself (e.g. automatic enhanced conversions) and never reaches the \u0060dataLayer\u0060 \u2014 GTM resolves the variable in the container and hands the value to the pixel SDK, which hashes it (SHA-256) before sending. Only the fields whose capture checkbox above is enabled are forwarded.",
+    "help": "Optional. Map your GTM \u201cUser-Provided Data\u201d variable (or any variable that resolves to an object with \u0060email\u0060 and/or \u0060phone_number\u0060). Use this when the email/phone is collected inside GTM and never reaches the \u0060dataLayer\u0060 \u2014 GTM resolves the variable in the container and hands the value to the pixel SDK, which hashes it (SHA-256) before sending. Only the fields whose capture checkbox above is enabled are forwarded.",
     "simpleValueType": true
   },
   {
