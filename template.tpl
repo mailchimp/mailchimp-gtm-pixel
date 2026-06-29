@@ -72,6 +72,13 @@ ___TEMPLATE_PARAMETERS___
     "simpleValueType": true
   },
   {
+    "type": "TEXT",
+    "name": "userProvidedData",
+    "displayName": "User-Provided Data variable",
+    "help": "Optional. Map your GTM \u201cUser-Provided Data\u201d variable (or any variable that resolves to an object with \u0060email\u0060 and/or \u0060phone_number\u0060). Use this when the email/phone is collected by GTM itself (e.g. automatic enhanced conversions) and never reaches the \u0060dataLayer\u0060 \u2014 GTM resolves the variable in the container and hands the value to the pixel SDK, which hashes it (SHA-256) before sending. Only the fields whose capture checkbox above is enabled are forwarded.",
+    "simpleValueType": true
+  },
+  {
     "type": "SIMPLE_TABLE",
     "name": "customEventMappings",
     "displayName": "Custom event mappings",
@@ -144,6 +151,26 @@ cfg.captureGaClientId = data.captureGaClientId;
 cfg.captureEmail = data.captureEmail;
 cfg.capturePhone = data.capturePhone;
 cfg.customEventMappings = data.customEventMappings;
+
+// Forward user data that GTM resolves inside the container (e.g. a "User-Provided
+// Data" variable). This covers the common case where GTM auto-collects email/phone
+// from the page and the value never reaches the dataLayer for the SDK to read.
+// Only the fields whose capture checkbox is enabled are forwarded; values are
+// hashed by the SDK before being sent.
+const upd = data.userProvidedData;
+if (upd && typeof upd === 'object') {
+  const userData = {};
+  if (data.captureEmail && upd.email) {
+    userData.email = upd.email;
+  }
+  if (data.capturePhone && upd.phone_number) {
+    userData.phoneNumber = upd.phone_number;
+  }
+  if (userData.email || userData.phoneNumber) {
+    cfg.userData = userData;
+  }
+}
+
 setInWindow('__mcGtmConfig', cfg, true);
 
 injectScript(snippetUrl, data.gtmOnSuccess, data.gtmOnFailure, 'mailchimp_pixel');
@@ -341,6 +368,44 @@ scenarios:
     assertThat(storedConfig.customEventMappings.length).isEqualTo(2);
     assertThat(storedConfig.customEventMappings[0].dataLayerEvent).isEqualTo('addToCart');
     assertThat(storedConfig.customEventMappings[1].mailchimpEvent).isEqualTo('PAGE_VIEWED');
+- name: User-Provided Data variable forwards email and phone when capture enabled
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureEmail = true;
+    mockData.capturePhone = true;
+    mockData.userProvidedData = { email: 'shopper@example.com', phone_number: '+15551234567' };
+    runCode(mockData);
+    assertThat(storedConfig.userData.email).isEqualTo('shopper@example.com');
+    assertThat(storedConfig.userData.phoneNumber).isEqualTo('+15551234567');
+- name: User-Provided Data only forwards fields whose capture checkbox is enabled
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureEmail = false;
+    mockData.capturePhone = true;
+    mockData.userProvidedData = { email: 'shopper@example.com', phone_number: '+15551234567' };
+    runCode(mockData);
+    assertThat(storedConfig.userData.email).isEqualTo(undefined);
+    assertThat(storedConfig.userData.phoneNumber).isEqualTo('+15551234567');
+- name: User-Provided Data is not set when no fields are captured
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureEmail = false;
+    mockData.capturePhone = false;
+    mockData.userProvidedData = { email: 'shopper@example.com', phone_number: '+15551234567' };
+    runCode(mockData);
+    assertThat(storedConfig.userData).isEqualTo(undefined);
 
 
 ___NOTES___
