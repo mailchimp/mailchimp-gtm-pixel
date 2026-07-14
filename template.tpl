@@ -57,7 +57,9 @@ ___TEMPLATE_PARAMETERS___
     "type": "CHECKBOX",
     "name": "captureGaClientId",
     "checkboxText": "Capture Google Analytics Client ID",
-    "simpleValueType": true
+    "help": "When enabled, the pixel reads the GA4 client ID from the site\u0027s `_ga` cookie and sends it to Mailchimp as a `GOOGLE_CLIENT_ID` identifier, used to link a visitor across sessions during identity resolution. Requires a GA4 / gtag.js (or GTM-managed GA4) setup that sets the `_ga` cookie. Leave unchecked to skip this capture. Make sure your site\u0027s privacy notice and consent flow cover this before enabling.",
+    "simpleValueType": true,
+    "defaultValue": true
   },
   {
     "type": "CHECKBOX",
@@ -405,6 +407,26 @@ scenarios:
     assertThat(storedConfig.customEventMappings.length).isEqualTo(2);
     assertThat(storedConfig.customEventMappings[0].dataLayerEvent).isEqualTo('addToCart');
     assertThat(storedConfig.customEventMappings[1].mailchimpEvent).isEqualTo('PAGE_VIEWED');
+- name: Capture Google Analytics Client ID flag passes through to the SDK config
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureGaClientId = true;
+    runCode(mockData);
+    assertThat(storedConfig.captureGaClientId).isEqualTo(true);
+- name: Capture Google Analytics Client ID can be disabled
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureGaClientId = false;
+    runCode(mockData);
+    assertThat(storedConfig.captureGaClientId).isEqualTo(false);
 - name: User-Provided Data variable forwards email and phone when capture enabled
   code: |-
     let storedConfig;
