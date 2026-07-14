@@ -73,6 +73,8 @@ is all the template needs.
      as a `GOOGLE_CLIENT_ID` identifier (see
      [Capturing the GA client ID](#capturing-the-ga-client-id)). On by default;
      uncheck to skip it.
+   - **GA4 Measurement ID** — your `G-XXXXXXXXXX`. **Required** when capturing the
+     client ID (see [Capturing the GA client ID](#capturing-the-ga-client-id)).
    - **Capture and hash email (EMAIL_SHA256)** — enable if your site pushes
      `user_data.email` to the `dataLayer`, or you map a **User-Provided Data
      variable** (see below).
@@ -142,15 +144,23 @@ used as-is; otherwise the SDK generates and persists its own IDs in
 ## Capturing the GA client ID
 
 When **Capture Google Analytics Client ID** is enabled, the pixel reads the GA4
-client ID from your site's `_ga` cookie and sends it to Mailchimp as a
+client ID via Google's `gtag('get', …)` API and sends it to Mailchimp as a
 `GOOGLE_CLIENT_ID` identifier. Mailchimp uses it to link a visitor's activity
 across sessions during identity resolution — it is longer-lived than the pixel's
 own anonymous visitor ID, so it helps keep a contact resolvable over time.
 
-- **Requirements** — your site must run GA4 via gtag.js or a GTM-managed GA4 tag
-  so the `_ga` cookie is present. If there's no `_ga` cookie, nothing is captured.
+- **Requirements** — your site must run GA4 on the page (gtag.js directly, or a
+  GTM-managed Google tag) so `gtag` is available.
+- **Measurement ID** — the pixel needs your GA4 Measurement ID (`G-XXXXXXXXXX`)
+  to call `gtag('get', …)`, so you **must set the GA4 Measurement ID field
+  explicitly** — there is no auto-detection. Find it in Google Analytics under
+  **Admin → Data streams → your web stream**. A Google Tag ID (`GT-…`) will not
+  work; use the `G-…` Measurement ID.
+- **Consent-aware** — capture goes through `gtag`, so when GA Consent Mode denies
+  analytics storage, `gtag` returns no client ID and nothing is captured. There
+  is no cookie fallback.
 - **Opt-in** — capture only happens when the checkbox is enabled. When it's off
-  (or the config is absent), the pixel does not read the `_ga` cookie at all.
+  (or the config is absent), the pixel does not attempt to read the client ID.
 - **Privacy** — the GA client ID is an online identifier (personal data under
   GDPR, personal information under CCPA/CPRA). Before enabling, make sure your
   site's privacy notice discloses this use and your consent flow covers it.

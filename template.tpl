@@ -57,9 +57,23 @@ ___TEMPLATE_PARAMETERS___
     "type": "CHECKBOX",
     "name": "captureGaClientId",
     "checkboxText": "Capture Google Analytics Client ID",
-    "help": "When enabled, the pixel reads the GA4 client ID from the site\u0027s `_ga` cookie and sends it to Mailchimp as a `GOOGLE_CLIENT_ID` identifier, used to link a visitor across sessions during identity resolution. Requires a GA4 / gtag.js (or GTM-managed GA4) setup that sets the `_ga` cookie. Leave unchecked to skip this capture. Make sure your site\u0027s privacy notice and consent flow cover this before enabling.",
+    "help": "When enabled, the pixel reads the GA4 client ID via Google\u0027s gtag API and sends it to Mailchimp as a `GOOGLE_CLIENT_ID` identifier, used to link a visitor across sessions during identity resolution. Requires GA4 (gtag.js or a GTM-managed Google tag) on the page and the GA4 Measurement ID below. Consent-aware: nothing is captured when GA consent denies analytics storage. Leave unchecked to skip. Make sure your site\u0027s privacy notice and consent flow cover this before enabling.",
     "simpleValueType": true,
     "defaultValue": true
+  },
+  {
+    "type": "TEXT",
+    "name": "measurementId",
+    "displayName": "GA4 Measurement ID",
+    "help": "Your GA4 Measurement ID (e.g. `G-XXXXXXXXXX`), used to read the Google Analytics client ID via gtag. Required when \u201cCapture Google Analytics Client ID\u201d is enabled \u2014 find it in Google Analytics under Admin \u2192 Data streams \u2192 your web stream. Note: a Google Tag ID (`GT-\u2026`) will NOT work here; use the `G-\u2026` Measurement ID.",
+    "simpleValueType": true,
+    "enablingConditions": [
+      {
+        "paramName": "captureGaClientId",
+        "paramValue": true,
+        "type": "EQUALS"
+      }
+    ]
   },
   {
     "type": "CHECKBOX",
@@ -186,6 +200,7 @@ if (!snippetUrl || snippetUrl.indexOf(URL_PREFIX) !== 0) {
 // can read it as it boots.
 const cfg = copyFromWindow('__mcGtmConfig') || {};
 cfg.captureGaClientId = data.captureGaClientId;
+cfg.measurementId = data.measurementId;
 cfg.captureEmail = data.captureEmail;
 cfg.capturePhone = data.capturePhone;
 cfg.customEventMappings = data.customEventMappings;
@@ -417,6 +432,17 @@ scenarios:
     mockData.captureGaClientId = true;
     runCode(mockData);
     assertThat(storedConfig.captureGaClientId).isEqualTo(true);
+- name: GA4 Measurement ID passes through to the SDK config
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.captureGaClientId = true;
+    mockData.measurementId = 'G-XXXXXXXXXX';
+    runCode(mockData);
+    assertThat(storedConfig.measurementId).isEqualTo('G-XXXXXXXXXX');
 - name: Capture Google Analytics Client ID can be disabled
   code: |-
     let storedConfig;
