@@ -14,8 +14,11 @@ You add the tag once and give it your Mailchimp snippet URL. From then on:
 
 - Standard GA4 ecommerce events are translated into Mailchimp events
   (for example `add_to_cart` → `PRODUCT_ADDED_TO_CART`, `purchase` → `PURCHASED`).
-- Optional identifiers (Google Analytics client ID, hashed email, hashed phone)
-  are captured when you enable them.
+- The Google Analytics client ID is captured when you enable **Capture Google
+  Analytics Client ID** (see [Capturing the GA client ID](#capturing-the-ga-client-id)),
+  and sent to Mailchimp as a `GOOGLE_CLIENT_ID` identifier used to link a visitor
+  across sessions during identity resolution.
+- Optional hashed identifiers (email, phone) are captured when you enable them.
 - Your own custom event names can be mapped to Mailchimp events without any code
   changes (see [Custom event mappings](#custom-event-mappings)).
 
@@ -66,7 +69,10 @@ is all the template needs.
 1. Go to **Tags → New → Tag Configuration → Mailchimp Site Tracking Pixel**.
 2. Fill in:
    - **Mailchimp snippet URL** — the URL you copied in step 1.
-   - **Capture Google Analytics Client ID** — recommended.
+   - **Capture Google Analytics Client ID** — enable to capture the GA4 client ID
+     as a `GOOGLE_CLIENT_ID` identifier (see
+     [Capturing the GA client ID](#capturing-the-ga-client-id)). On by default;
+     uncheck to skip it.
    - **Capture and hash email (EMAIL_SHA256)** — enable if your site pushes
      `user_data.email` to the `dataLayer`, or you map a **User-Provided Data
      variable** (see below).
@@ -132,6 +138,22 @@ dataLayer.push({
 `ecommerce.cart_id` and `ecommerce.checkout_id` are optional. If present they're
 used as-is; otherwise the SDK generates and persists its own IDs in
 `localStorage`.
+
+## Capturing the GA client ID
+
+When **Capture Google Analytics Client ID** is enabled, the pixel reads the GA4
+client ID from your site's `_ga` cookie and sends it to Mailchimp as a
+`GOOGLE_CLIENT_ID` identifier. Mailchimp uses it to link a visitor's activity
+across sessions during identity resolution — it is longer-lived than the pixel's
+own anonymous visitor ID, so it helps keep a contact resolvable over time.
+
+- **Requirements** — your site must run GA4 via gtag.js or a GTM-managed GA4 tag
+  so the `_ga` cookie is present. If there's no `_ga` cookie, nothing is captured.
+- **Opt-in** — capture only happens when the checkbox is enabled. When it's off
+  (or the config is absent), the pixel does not read the `_ga` cookie at all.
+- **Privacy** — the GA client ID is an online identifier (personal data under
+  GDPR, personal information under CCPA/CPRA). Before enabling, make sure your
+  site's privacy notice discloses this use and your consent flow covers it.
 
 ## Capturing user data
 
