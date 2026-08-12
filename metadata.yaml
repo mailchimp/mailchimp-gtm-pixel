@@ -2,11 +2,27 @@ homepage: "https://mailchimp.com"
 documentation: "https://mailchimp.com/help/mailchimp-site-tracking-pixel-integration-guidance/"
 versions:
   # Latest version
+  - sha: 707a556cdda5214d695ccf7bade82a3ebff0e75a
+    changeNotes: |2
+      Re-architect the tag as a thin loader: inject the per-account Mailchimp
+      pixel SDK (chimpstatic.com/mcjs-connected/js/users/.../....js) instead of
+      the GTM bridge (gtm-bridge.js). All GA4 -> Mailchimp mapping, payload
+      building, identifier capture and hashing now happen in the SDK, so the tag
+      only needs a single All Pages trigger.
+      Configure the SDK via window.__mcGtmConfig (removes the mcTrack/mcIdentify
+      globals, the _ga cookie read and the dataLayer read permissions).
+      Add opt-in "Capture Google Analytics Client ID" (GOOGLE_CLIENT_ID) with a
+      required GA4 Measurement ID, consent-aware via gtag.
+      Add optional hashed email/phone capture (EMAIL_SHA256 / PHONE_SHA256) from
+      the dataLayer or a GTM User-Provided Data variable.
+      Add customer-defined custom event mappings on top of the built-in GA4
+      mappings, and expand built-in coverage (view_item_list, select_item,
+      remove_from_cart, add_to_wishlist, view_cart, add_payment_info, search).
+  # Older versions
   - sha: 28170f04649af47037161315b0e87168fa1dbf26
     changeNotes: |2
       Add Mailchimp brand icon to template (brand.thumbnail).
       Set brand.id to "mailchimp".
-  # Older versions
   - sha: 1ba5f9812384adc1c30e8b8ded19d744f65308ca
     changeNotes: |2
       Initial release.
