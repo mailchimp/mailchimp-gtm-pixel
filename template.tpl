@@ -163,6 +163,14 @@ ___TEMPLATE_PARAMETERS___
         ]
       }
     ]
+  },
+  {
+    "type": "CHECKBOX",
+    "name": "enableDataLayerAccess",
+    "checkboxText": "Read GA4 ecommerce events from the dataLayer",
+    "help": "When enabled (default), the pixel SDK reads window.dataLayer to translate GA4 ecommerce events (view_item, add_to_cart, purchase, ...) into Mailchimp events, and to capture user_data identifiers pushed alongside them. Disable only if your site's policy prohibits third-party dataLayer access -- Capture Google Analytics Client ID and the User-Provided Data variable above still work with this off.",
+    "simpleValueType": true,
+    "defaultValue": true
   }
 ]
 
@@ -204,6 +212,7 @@ cfg.measurementId = data.measurementId;
 cfg.captureEmail = data.captureEmail;
 cfg.capturePhone = data.capturePhone;
 cfg.customEventMappings = data.customEventMappings;
+cfg.enableDataLayerAccess = data.enableDataLayerAccess;
 
 // Forward user data that GTM resolves inside the container (e.g. a "User-Provided
 // Data" variable). This covers the common case where GTM auto-collects email/phone
@@ -491,6 +500,26 @@ scenarios:
     mockData.userProvidedData = { email: 'shopper@example.com', phone_number: '+15551234567' };
     runCode(mockData);
     assertThat(storedConfig.userData).isEqualTo(undefined);
+- name: enableDataLayerAccess defaults to true and passes through to the SDK config
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.enableDataLayerAccess = true;
+    runCode(mockData);
+    assertThat(storedConfig.enableDataLayerAccess).isEqualTo(true);
+- name: enableDataLayerAccess can be disabled
+  code: |-
+    let storedConfig;
+    mock('copyFromWindow', function() { return undefined; });
+    mock('setInWindow', function(key, value) { storedConfig = value; return true; });
+    mock('injectScript', function(url, onSuccess) { onSuccess(); });
+    mockData.mcSnippetUrl = 'https://chimpstatic.com/mcjs-connected/js/users/user-1/site-1.js';
+    mockData.enableDataLayerAccess = false;
+    runCode(mockData);
+    assertThat(storedConfig.enableDataLayerAccess).isEqualTo(false);
 
 
 ___NOTES___

@@ -2,6 +2,16 @@ homepage: "https://mailchimp.com"
 documentation: "https://mailchimp.com/help/mailchimp-site-tracking-pixel-integration-guidance/"
 versions:
   # Latest version
+  - sha: PENDING_COMMIT_SHA # TODO: replace with the real commit SHA once template.tpl/README.md are committed
+    changeNotes: |2
+      Add opt-in "Read GA4 ecommerce events from the dataLayer" checkbox
+      (enableDataLayerAccess), defaulted to true so existing installs are
+      unaffected. When disabled, the SDK never reads, patches, or creates
+      window.dataLayer -- no GA4 event translation and no user_data
+      identifier capture from dataLayer entries. Capture Google Analytics
+      Client ID and the User-Provided Data variable are unaffected, since
+      neither touches dataLayer.
+  # Older versions
   - sha: 707a556cdda5214d695ccf7bade82a3ebff0e75a
     changeNotes: |2
       Re-architect the tag as a thin loader: inject the per-account Mailchimp
