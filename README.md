@@ -84,6 +84,12 @@ is all the template needs.
    - *(Optional)* **User-Provided Data variable** — see
      [Capturing user data](#capturing-user-data).
    - *(Optional)* **Custom event mappings** — see below.
+   - **Read GA4 ecommerce events from the dataLayer** — enabled by default; the
+     SDK reads `window.dataLayer` to translate ecommerce events and capture
+     `user_data` identifiers pushed alongside them. Disable only if your site's
+     policy prohibits third-party `dataLayer` access — **Capture Google
+     Analytics Client ID** and the **User-Provided Data variable** above still
+     work with this off, since neither touches `dataLayer`.
 3. Add a single trigger: **All Pages** (Page View). That's all that's needed —
    no per-event or ecommerce triggers. The injected SDK reads the `dataLayer`
    itself and translates ecommerce events on its own.
