@@ -2,7 +2,7 @@ homepage: "https://mailchimp.com"
 documentation: "https://mailchimp.com/help/mailchimp-site-tracking-pixel-integration-guidance/"
 versions:
   # Latest version
-  - sha: b837f64
+  - sha: b837f645afedf7a0eff92fbc99bc9336fc651160
     changeNotes: |2
       Add opt-in "Read GA4 ecommerce events from the dataLayer" checkbox
       (enableDataLayerAccess), defaulted to true so existing installs are
